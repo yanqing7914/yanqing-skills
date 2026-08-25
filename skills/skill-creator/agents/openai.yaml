@@ -1,0 +1,6 @@
+interface:
+  display_name: "Skill Creator"
+  short_description: "Create, audit, and improve Codex Skills"
+  default_prompt: "Use $skill-creator to design, audit, or upgrade a Codex Skill with tests and clear resource boundaries."
+  icon_small: "./assets/skill-creator-small.svg"
+  icon_large: "./assets/skill-creator.png"
