@@ -90,7 +90,7 @@ git commit -m "<skill-name>: add initial skill"
 ```bash
 git tag -a <skill-name>-v0.1.0 -m "<skill-name> v0.1.0"
 git push origin main
- git push origin <skill-name>-v0.1.0
+git push origin <skill-name>-v0.1.0
 ```
 
 稳定版本通常从 `v1.0.0` 开始。发布前同步更新该 Skill 的 `CHANGELOG.md`，并在 GitHub Releases 中使用同名 tag（可选）。
