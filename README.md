@@ -7,7 +7,7 @@
 将已经验证可用的 Skill 集中开源，遵循 `SKILL.md` 结构，让支持 Agent Skills 的 Claude Code、Codex、Cursor 等工具可以按目录直接加载。
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-0-10B981?style=for-the-badge)](#skills)
+[![Skills](https://img.shields.io/badge/Skills-1-10B981?style=for-the-badge)](#skills)
 [![Agent Skills](https://img.shields.io/badge/Agent%20Skills-SKILL.md-8B5CF6?style=for-the-badge)](https://agentskills.io)
 
 </div>
@@ -35,11 +35,9 @@ yanqing-skills/
 
 ## Skills
 
-目前还没有正式发布的 Skill。新增 Skill 后，在这里添加一行简介和链接。
-
 | Skill | 说明 | 目录 |
 |---|---|---|
-| — | — | — |
+| `skill-creator` | 创建、评估和优化 Agent Skill | [`skill-creator`](./skill-creator) |
 
 ## 安装单个 Skill
 
