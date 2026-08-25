@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "skill": "skill-creator",
+  "source_of_truth": [
+    "SKILL.md",
+    "scripts/quick_validate.py",
+    "scripts/split_skill_cases.py",
+    "scripts/skill_gate.py"
+  ],
+  "sections": {
+    "routing": [
+      {
+        "id": "create-codex-skill",
+        "kind": "positive",
+        "prompt": "Create a reusable Codex Skill for our incident handoff workflow.",
+        "expected_action": "Use skill-creator to align scope, scaffold the Skill, define routing, and validate it.",
+        "evidence": [
+          "SKILL.md: Engineering workflow",
+          "SKILL.md: 1. Inventory (read-only)"
+        ]
+      },
+      {
+        "id": "audit-existing-skill",
+        "kind": "positive",
+        "prompt": "Audit this existing Skill and make it meet our engineering standard.",
+        "expected_action": "Use skill-creator; inventory before edits, identify missing tests or resources, then validate the repaired Skill.",
+        "evidence": [
+          "SKILL.md: Operating contract",
+          "SKILL.md: 7. Release review"
+        ]
+      },
+      {
+        "id": "repair-skill-regression",
+        "kind": "positive",
+        "prompt": "This Skill repeatedly fails on malformed customer data. Turn that into a regression and fix it.",
+        "expected_action": "Use skill-creator to capture the failure as a minimal regression case and improve the Skill without hiding the defect in prose.",
+        "evidence": [
+          "SKILL.md: Operating contract",
+          "SKILL.md: Contract and regression minimum"
+        ]
+      },
+      {
+        "id": "productize-prompt-workflow",
+        "kind": "nonstandard_positive",
+        "prompt": "Productize this prompt workflow so our team can invoke it consistently.",
+        "expected_action": "Interpret this as creating or standardizing a reusable Codex Skill and use skill-creator.",
+        "evidence": [
+          "SKILL.md frontmatter description",
+          "SKILL.md: Scope and resource layout"
+        ]
+      },
+      {
+        "id": "split-bloated-skill-instructions",
+        "kind": "nonstandard_positive",
+        "prompt": "Our SKILL.md is too long. Move conditional details to the right places without changing behavior.",
+        "expected_action": "Use skill-creator to retain core behavior in SKILL.md and route conditional material to references, scripts, or assets as appropriate.",
+        "evidence": [
+          "SKILL.md: Operating contract",
+          "SKILL.md: 4. Implement with progressive disclosure"
+        ]
+      },
+      {
+        "id": "execute-domain-pdf-skill",
+        "kind": "negative",
+        "prompt": "Merge these two PDFs with the installed PDF Skill.",
+        "expected_action": "Do not route to skill-creator; execute the relevant domain Skill instead.",
+        "evidence": [
+          "SKILL.md frontmatter exclusion: executing an existing domain Skill"
+        ]
+      },
+      {
+        "id": "ordinary-repository-change",
+        "kind": "negative",
+        "prompt": "Fix the failing TypeScript unit test in this repository.",
+        "expected_action": "Do not route to skill-creator unless the request also asks to create, audit, or improve a Skill.",
+        "evidence": [
+          "SKILL.md frontmatter exclusion: building a general software project"
+        ]
+      },
+      {
+        "id": "plugin-scaffold-confusion",
+        "kind": "adjacent",
+        "prompt": "Create a Codex plugin with a manifest and package structure.",
+        "expected_action": "Route to plugin-creator rather than skill-creator.",
+        "evidence": [
+          "SKILL.md frontmatter exclusion: creating a Codex plugin"
+        ]
+      },
+      {
+        "id": "multi-agent-repository-confusion",
+        "kind": "adjacent",
+        "prompt": "Coordinate several agents to implement this repository change.",
+        "expected_action": "Route to a multi-agent coding workflow rather than skill-creator.",
+        "evidence": [
+          "tests/routing_cases.md: Adjacent-skill confusion",
+          "SKILL.md frontmatter scope"
+        ]
+      }
+    ],
+    "behavior": [
+      {
+        "id": "validate-complete-engineered-skill",
+        "kind": "success",
+        "scenario": "A completed Skill has valid frontmatter, safe resources, UI metadata, and a complete routing/behavior/completion contract.",
+        "assertions": [
+          "python3 scripts/quick_validate.py <skill-dir> exits 0 for static structure even when source Git provenance is unavailable",
+          "python3 scripts/quick_validate.py <skill-dir> --engineering exits 0 only after contract, metadata, and clean source Git provenance pass",
+          "python3 scripts/quick_validate.py <skill-dir> --git exits nonzero and reports unavailable provenance when the Skill is outside Git",
+          "The validator reads back frontmatter, metadata, local references, and contract structure"
+        ],
+        "evidence": [
+          "scripts/quick_validate.py: validate_engineering_contract",
+          "scripts/quick_validate.py: inspect_git_versioning",
+          "tests/test_skill_creator.py: test_validator_cli_keeps_static_git_and_engineering_semantics_separate",
+          "tests/test_skill_creator.py: test_skill_contract_is_strict_and_engineering_requires_git_provenance"
+        ]
+      },
+      {
+        "id": "reject-invalid-skill-input",
+        "kind": "invalid_input",
+        "scenario": "A Skill has a broken local reference, invalid contract, unsafe name, or an invalid split manifest.",
+        "assertions": [
+          "Validation returns a nonzero result with a concrete diagnostic",
+          "The splitter and gate reject duplicate IDs, leaked split IDs, malformed result IDs, and non-finite scores"
+        ],
+        "evidence": [
+          "scripts/quick_validate.py: _safe_local_reference and _validate_contract",
+          "scripts/split_skill_cases.py: load_cases",
+          "scripts/skill_gate.py: load_manifest and load_results",
+          "tests/test_skill_creator.py: invalid-input regression tests"
+        ]
+      },
+      {
+        "id": "surface-tool-or-permission-failure",
+        "kind": "tool_or_permission_failure",
+        "scenario": "Validation, evaluation, or a forward test cannot run because a tool, dependency, permission, or external prerequisite is unavailable.",
+        "assertions": [
+          "Do not claim the Skill is stable without the available validator and evidence",
+          "Report the failed prerequisite and preserve the gap rather than masking it in SKILL.md",
+          "The CLI distinguishes a missing Git prerequisite from a malformed Skill and returns a nonzero engineering result"
+        ],
+        "evidence": [
+          "SKILL.md: Operating contract",
+          "SKILL.md: 6. Forward-test and iterate",
+          "SKILL.md: 5. Validate at the right level"
+        ]
+      },
+      {
+        "id": "repeat-safe-gate-and-holdout",
+        "kind": "idempotence",
+        "scenario": "A candidate is evaluated repeatedly or a held-out release result is submitted twice.",
+        "assertions": [
+          "Selection accepts only a strict improvement and stages a full immutable candidate tree",
+          "A repeated holdout record for the accepted run is rejected",
+          "Neither selection staging nor holdout silently overwrites the active Skill",
+          "Explicit adoption creates a backup and is the only operation that replaces the active Skill"
+        ],
+        "evidence": [
+          "scripts/skill_gate.py: stage_candidate and record_holdout",
+          "scripts/skill_gate.py: adopt_staged_candidate",
+          "tests/test_skill_creator.py: test_holdout_does_not_mutate_active_and_adopt_keeps_backup"
+        ]
+      }
+    ],
+    "completion": [
+      {
+        "id": "distributable-skill-evidence",
+        "artifact": "A validated Skill directory with SKILL.md, required resource navigation, UI metadata when present, tests/skill_contract.json, and explicit Git provenance evidence before distribution.",
+        "assertions": [
+          "The publish-grade validator exits 0",
+          "A missing Git repository is reported as unavailable provenance rather than a successful engineering claim",
+          "The contract identifies routing boundaries, behavior failures, and completion evidence",
+          "No placeholder or broken local reference remains"
+        ],
+        "evidence": [
+          "scripts/quick_validate.py: validate_engineering_contract",
+          "tests/test_skill_creator.py: test_skill_contract_is_strict_and_engineering_requires_git_provenance"
+        ]
+      },
+      {
+        "id": "scoreable-skillopt-evidence",
+        "artifact": "An immutable manifest with train/selection/holdout splits, provenance-bound result artifacts, a staged full-tree candidate, and an optional one-time holdout report.",
+        "assertions": [
+          "Train, selection, and holdout task IDs are disjoint",
+          "Every split record payload matches the immutable source corpus, not only its ID",
+          "The gate rejects wrong manifest hashes, evaluator versions, candidate fingerprints, non-finite scores, and ID mismatch",
+          "Holdout is release evidence only and cannot update the active Skill",
+          "Adoption retains a backup and is the only active-Skill mutation"
+        ],
+        "evidence": [
+          "scripts/split_skill_cases.py: create_splits",
+          "scripts/skill_gate.py: load_manifest, load_results, stage_candidate, and record_holdout",
+          "tests/test_skill_creator.py: SkillOpt gate regression tests"
+        ]
+      }
+    ]
+  }
+}
