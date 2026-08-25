@@ -1,118 +1,132 @@
+<div align="center">
+
 # yanqing-skills
 
-个人维护的 AI Skills 集合。所有 Skill 放在同一个 Git 仓库中，但通过独立目录、commit、CHANGELOG 和带前缀的 Git tag 分别管理。
+**个人维护的 Agent Skills 集合**
 
-- 远端仓库：<https://github.com/yanqing7914/yanqing-skills>
-- 默认分支：`main`
-- 操作规范：[`AGENT.md`](AGENT.md)
+将已经验证可用的 Skill 集中开源，遵循 `SKILL.md` 结构，让支持 Agent Skills 的 Claude Code、Codex、Cursor 等工具可以按目录直接加载。
 
-## 目录
+[![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
+[![Skills](https://img.shields.io/badge/Skills-0-10B981?style=for-the-badge)](#skills)
+[![Agent Skills](https://img.shields.io/badge/Agent%20Skills-SKILL.md-8B5CF6?style=for-the-badge)](https://agentskills.io)
 
-```text
-skills/
-  <skill-name>/
-    SKILL.md       # 必需：AI 执行指令
-    README.md      # 推荐：面向人的说明
-    CHANGELOG.md   # 推荐：该 Skill 的版本记录
-    examples/      # 可选
-    references/    # 可选
-    scripts/       # 可选
-```
+</div>
 
-## 当前 Skills
+## 这个仓库是什么
 
-目前还没有正式 Skill。新增 Skill 请先阅读 [`AGENT.md`](AGENT.md) 的完整流程。
-
-## 日常管理流程
-
-### 首次在新电脑使用
-
-```bash
-git clone https://github.com/yanqing7914/yanqing-skills.git
-cd yanqing-skills
-```
-
-### 开始修改前
-
-```bash
-git switch main
-git pull --ff-only
-```
-
-确认工作区状态，避免覆盖尚未提交的内容：
-
-```bash
-git status
-```
-
-### 新增一个 Skill
-
-以 `code-review` 为例：
-
-```bash
-mkdir -p skills/code-review
-cp templates/basic-skill/SKILL.md skills/code-review/SKILL.md
-```
-
-编辑 `skills/code-review/SKILL.md`，确保目录名和 front matter 中的 `name` 都是 `code-review`。推荐同时添加：
+这里的每个一级目录就是一个独立 Skill：
 
 ```text
-skills/code-review/
-  SKILL.md
-  README.md
-  CHANGELOG.md
+yanqing-skills/
+├── code-review/
+│   └── SKILL.md
+├── meeting-summary/
+│   └── SKILL.md
+└── web-research/
+    └── SKILL.md
 ```
 
-### 校验、提交和上传
+所有 Skill 共用一个 GitHub 仓库和 `main` 分支，但通过以下方式独立管理：
 
-```bash
-node tools/validate-skills.js
-git diff --check
-git diff -- skills/code-review
-git add skills/code-review
-git commit -m "code-review: add initial skill"
-git push
+- 目录：区分不同 Skill
+- commit：记录具体修改，提交主题以 Skill 名称开头
+- CHANGELOG：记录该 Skill 的版本变化
+- tag：使用 `<skill-name>-v<version>` 发布单个 Skill
+
+## Skills
+
+目前还没有正式发布的 Skill。新增 Skill 后，在这里添加一行简介和链接。
+
+| Skill | 说明 | 目录 |
+|---|---|---|
+| — | — | — |
+
+## 安装单个 Skill
+
+在支持 Agent Skills 的工具中，直接把目标目录 URL 交给 Agent：
+
+```text
+请安装这个 Skill：
+https://github.com/yanqing7914/yanqing-skills/tree/main/<skill-name>
 ```
 
-一个 commit 尽量只处理一个 Skill，commit subject 使用 `<skill-name>: <change>` 格式。
+将 `<skill-name>` 替换为实际目录名，例如：
 
-### 发布单个 Skill 版本
-
-```bash
-git tag -a code-review-v0.1.0 -m "code-review v0.1.0"
-git push origin code-review-v0.1.0
+```text
+https://github.com/yanqing7914/yanqing-skills/tree/main/code-review
 ```
 
-发布前应更新该 Skill 的 `CHANGELOG.md`。更完整的新增、更新和发布规则见 [`AGENT.md`](AGENT.md)。
+也可以只下载目标目录中的 `SKILL.md`，放入对应 Agent 的 Skills 目录。每个 Skill 的具体说明和依赖以该目录内的 `README.md` 为准。
 
-## 版本约定
+## 上传已有 Skill
 
-本仓库使用带 Skill 名称前缀的 tag：
+如果你已经写好了一个 Skill，只需要把 Skill 文件夹交给 Agent，并说明：
+
+```text
+把这个 Skill 上传到 yanqing-skills
+```
+
+Agent 会按照 [`AGENT.md`](AGENT.md) 自动完成识别目录、校验 `SKILL.md`、补充说明、提交 commit、推送到 GitHub 和创建版本 tag。仓库地址：<https://github.com/yanqing7914/yanqing-skills>。
+
+## 版本和历史
+
+版本 tag 使用以下格式：
 
 ```text
 <skill-name>-vMAJOR.MINOR.PATCH
 ```
 
-例如：`code-review-v1.0.0`、`meeting-summary-v0.2.0`。
+例如：
 
-- `MAJOR`：不兼容的行为或结构变化
-- `MINOR`：向后兼容的新能力
-- `PATCH`：向后兼容的修复或文字调整
+```text
+code-review-v0.1.0
+code-review-v1.0.0
+code-review-v1.0.1
+```
 
-查看某个 Skill 的历史：
+查看某个 Skill 的历史和版本：
 
 ```bash
-git log -- skills/<skill-name>
-git log --follow -- skills/<skill-name>/SKILL.md
+git log -- <skill-name>
+git log --follow -- <skill-name>/SKILL.md
 git tag --list '<skill-name>-v*'
 ```
 
-## 校验
+## 本地开发
 
 ```bash
+git clone https://github.com/yanqing7914/yanqing-skills.git
+cd yanqing-skills
 node tools/validate-skills.js
+git diff --check
 ```
 
-## 许可
+完整的新增、更新、版本判断和上传规范见 [`AGENT.md`](AGENT.md)。
 
-见 [`LICENSE`](LICENSE)。
+## 目录约定
+
+每个 Skill 至少包含：
+
+```text
+<skill-name>/
+└── SKILL.md
+```
+
+复杂 Skill 可以按需添加：
+
+```text
+<skill-name>/
+├── SKILL.md
+├── README.md
+├── CHANGELOG.md
+├── references/
+├── scripts/
+├── examples/
+└── assets/
+```
+
+不要为不需要的资源创建空目录。Skill 名称使用小写字母、数字和短横线，例如 `code-review`、`web-research`。
+
+## License
+
+MIT License，详见 [`LICENSE`](LICENSE)。

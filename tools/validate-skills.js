@@ -4,21 +4,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const root = path.resolve(__dirname, '..');
-const skillsDir = path.join(root, 'skills');
 const namePattern = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const reservedDirs = new Set(['.git', '.github', 'templates', 'tools', 'node_modules']);
 
-if (!fs.existsSync(skillsDir)) {
-  console.error('Missing skills/ directory.');
-  process.exit(1);
-}
-
-const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
-const skillDirs = entries.filter((entry) => entry.isDirectory());
+const entries = fs.readdirSync(root, { withFileTypes: true });
+const skillDirs = entries.filter(
+  (entry) => entry.isDirectory() && !entry.name.startsWith('.') && !reservedDirs.has(entry.name),
+);
 const errors = [];
 
 for (const entry of skillDirs) {
   const skillName = entry.name;
-  const skillPath = path.join(skillsDir, skillName);
+  const skillPath = path.join(root, skillName);
   const skillFile = path.join(skillPath, 'SKILL.md');
 
   if (!namePattern.test(skillName)) {
