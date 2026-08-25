@@ -45,10 +45,42 @@ https://github.com/yanqing7914/yanqing-skills/tree/main/<skill-name>
 
 ### 🛠️ skill-creator
 
-用于创建、审计、标准化、测试和发布 Codex Skill。
+> 别再把 Skill 当成一段 Prompt 了。
 
-- [打开 Skill 目录](./skill-creator)
-- [查看 SKILL.md](./skill-creator/SKILL.md)
+很多 Skill 初看能用，但实际会遇到触发边界不清、和其他 Skill 冲突、改完没有回归测试、资源链接失效、版本无法追踪等问题。`skill-creator` 是一套面向 Agent 的工程化工作流，帮助你把 Skill 从“能跑”升级成真正可验证、可测试、可追溯、可持续迭代的标准。
+
+**它能做什么**
+
+- 定义清晰的触发范围和排除条件
+- 检查 Skill 结构、契约、路由和行为
+- 设计回归测试，验证修改是否真的有效
+- 规范拆分脚本、参考资料和其他资源
+- 校验本地链接、元数据、权限和安全边界
+- 通过 Git provenance 追踪当前版本的来源
+- 提供 SkillOpt 风格的 `train / selection / holdout` 流程
+- 让候选版本先评测、再暂存，审核后才 adopt
+- 不伪造分数，不把“命令执行成功”冒充成“Skill 已经优化完成”
+
+**适合什么时候用**
+
+- 创建新的 Agent Skill
+- 整理和标准化已有 Skill
+- 排查 Skill 不触发或误触发
+- 处理多个 Skill 之间的冲突
+- 为 Skill 增加脚本、参考资料和测试
+- 评估一次 Skill 优化是否真的带来改进
+
+**怎么触发**
+
+```text
+帮我创建一个 Skill
+审计一下这个 Skill
+检查这个 Skill 的触发边界和路由
+给这个 Skill 补充回归测试
+评估这次 Skill 优化是否真的有效
+```
+
+→ [打开 Skill 目录](./skill-creator) · [查看 SKILL.md](./skill-creator/SKILL.md)
 
 ---
 
