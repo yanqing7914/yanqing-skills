@@ -23,6 +23,7 @@
 | 名字 | 一句话 | 入口 |
 |---|---|---|
 | 🛠️ [**skill-creator**](#️-skill-creator) | 创建、审计、标准化、测试和发布 Codex Skill | [`SKILL.md`](./skill-creator/SKILL.md) |
+| 💽 [**storage-analyzer**](#-storage-analyzer) | 分析磁盘占用并生成可操作的存储报告 | [`SKILL.md`](./storage-analyzer/SKILL.md) |
 
 ---
 
@@ -81,6 +82,21 @@ https://github.com/yanqing7914/yanqing-skills/tree/main/<skill-name>
 ```
 
 → [打开 Skill 目录](./skill-creator) · [查看 SKILL.md](./skill-creator/SKILL.md)
+
+### 💽 storage-analyzer
+
+一句话分析 macOS / Windows 磁盘占用，识别空间大户，按清理风险分级，并生成交互式 HTML 存储报告。
+
+**怎么触发**
+
+```text
+帮我看看存储
+磁盘满了
+清理一下磁盘
+哪些东西占空间
+```
+
+→ [打开 Skill 目录](./storage-analyzer) · [查看 SKILL.md](./storage-analyzer/SKILL.md)
 
 ---
 
