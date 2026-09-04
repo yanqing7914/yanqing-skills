@@ -7,7 +7,7 @@
 #### 我自己使用和维护的一些 Agent Skills
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-2-10B981?style=for-the-badge)](#-skills)
+[![Skills](https://img.shields.io/badge/Skills-3-10B981?style=for-the-badge)](#-skills)
 [![AgentSkills](https://img.shields.io/badge/AgentSkills-Standard-8B5CF6?style=for-the-badge)](https://agentskills.io)
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-D97706?style=flat-square&logo=anthropic&logoColor=white)
@@ -26,6 +26,7 @@
 |---|---|---|
 | 🛠️ [**skill-creator**](#️-skill-creator) | 创建、审计、标准化、测试和发布 Codex Skill | [`SKILL.md`](./skill-creator/SKILL.md) |
 | 💽 [**storage-analyzer**](#-storage-analyzer) | 分析 Mac / Windows 磁盘占用，生成分级清理报告 | [`SKILL.md`](./storage-analyzer/SKILL.md) |
+| 🩺 [**github-repo-health**](#-github-repo-health) | 审计 GitHub 仓库的结构、CI/CD、发布和安全风险 | [`SKILL.md`](./github-repo-health/SKILL.md) |
 
 ---
 
@@ -129,6 +130,39 @@ C 盘满了
 ```
 
 → [SKILL.md](./storage-analyzer/SKILL.md)
+
+</td></tr>
+</table>
+
+<table>
+<tr><td>
+
+### 🩺 github-repo-health
+
+> 在上线之前，先让仓库接受一次有证据的健康检查。
+
+以只读方式审计本地或 GitHub 仓库，检查项目结构、GitHub Actions、版本发布、安全、依赖、Docker 和可维护性风险，并把已验证问题与需要 GitHub API 才能确认的项目分开报告。
+
+**它能做什么**
+
+- 检查 README、License、`.gitignore` 和安全文档等基础结构
+- 审查 GitHub Actions 触发条件、权限和 Action 固定方式
+- 检查 Git tag、SemVer 和发布可追溯性
+- 检测常见 GitHub 与云凭据泄露模式
+- 检查 Docker 基础镜像固定、非 root 用户和健康检查
+- 按 P0-P3 严重程度输出证据、影响和修复建议
+- 将本地静态证据与 GitHub 远端配置检查明确区分
+
+**怎么触发**
+
+```text
+检查一下这个 GitHub 仓库是否健康
+审计这个仓库的 CI/CD
+看看这个项目上线前还有什么风险
+检查 GitHub Actions 和发布流程
+```
+
+→ [SKILL.md](./github-repo-health/SKILL.md)
 
 </td></tr>
 </table>

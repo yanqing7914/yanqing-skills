@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub Repo Health"
+  short_description: "Audit GitHub repository health and delivery risks"
+  default_prompt: "Use $github-repo-health to audit this repository and report prioritized CI/CD, security, release, and maintainability issues."
