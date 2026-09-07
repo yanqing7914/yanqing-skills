@@ -6,8 +6,11 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
+import shutil
 import subprocess
+import sys
 from pathlib import Path, PurePosixPath
 
 try:
@@ -18,12 +21,18 @@ except ModuleNotFoundError:  # Keep structural validation usable in minimal runt
 
 MAX_SKILL_NAME_LENGTH = 64
 MAX_SKILL_LINES = 500
+VERIFICATION_TIMEOUT_SECONDS = 120
+MAX_VERIFICATION_ARGS = 64
+MAX_VERIFICATION_OUTPUT = 4000
 REQUIRED_CONTRACT_SECTIONS = {"routing", "behavior", "completion"}
 FORBIDDEN_PLACEHOLDER_PATTERN = re.compile(
     r"\[\s*(?:TODO|TBD|FIXME|REPLACE ME|PLACEHOLDER)[^\]]*\]", re.IGNORECASE
 )
 EXCLUDED_DIRS = {"__pycache__", ".git", ".skill-evals"}
 EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
+SHELL_EXECUTABLES = {"sh", "bash", "zsh", "fish", "ksh", "dash", "cmd", "powershell", "pwsh"}
+FORBIDDEN_COMMAND_CHARS = set("\x00\r\n;|&<>`$")
+DEFAULT_TEST_PATTERN = "test_*.py"
 
 
 def _empty_git_report(status, message):
@@ -510,16 +519,123 @@ def _validate_skill_tree(skill_path):
     return True, "Skill tree is safe"
 
 
-def _validate_contract(skill_path):
+def _load_contract(skill_path):
+    """Load the optional contract without turning malformed JSON into a traceback."""
     contract_path = skill_path / "tests" / "skill_contract.json"
     if not contract_path.exists():
-        return True, "No optional engineering contract"
+        return None, None
     try:
         contract = json.loads(contract_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        return False, f"Invalid tests/skill_contract.json: {exc}"
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return None, f"Invalid tests/skill_contract.json: {exc}"
+    return contract, None
+
+
+def _validate_verification_command(contract):
+    """Validate an optional test command as a bounded argv vector.
+
+    Commands are intentionally not accepted as shell strings.  The engineering
+    gate invokes the resulting argv with ``shell=False`` and a fixed working
+    directory, so shell metacharacters and wrapper interpreters are rejected at
+    the contract boundary.
+    """
+    if not isinstance(contract, dict) or "verification" not in contract:
+        return True, None
+    verification = contract.get("verification")
+    if not isinstance(verification, dict):
+        return False, "tests/skill_contract.json verification must be an object"
+    unknown = set(verification) - {"test_command"}
+    if unknown:
+        return False, "tests/skill_contract.json verification has unexpected key(s): " + ", ".join(sorted(unknown))
+    command = verification.get("test_command")
+    if not isinstance(command, list) or not command:
+        return False, "tests/skill_contract.json verification.test_command must be a non-empty argv list"
+    if len(command) > MAX_VERIFICATION_ARGS:
+        return False, f"tests/skill_contract.json verification.test_command has too many arguments (maximum {MAX_VERIFICATION_ARGS})"
+    for index, argument in enumerate(command):
+        if not isinstance(argument, str) or not argument:
+            return False, f"tests/skill_contract.json verification.test_command[{index}] must be a non-empty string"
+        if len(argument) > 512:
+            return False, f"tests/skill_contract.json verification.test_command[{index}] is too long"
+        if any(char in FORBIDDEN_COMMAND_CHARS for char in argument):
+            return False, "tests/skill_contract.json verification.test_command must not contain shell metacharacters"
+        if argument.startswith(("-c", "--command", "--eval", "-e")):
+            return False, "tests/skill_contract.json verification.test_command must not evaluate inline code"
+    executable = Path(command[0]).name.lower()
+    if executable in SHELL_EXECUTABLES:
+        return False, "tests/skill_contract.json verification.test_command must not invoke a shell"
+    if command[0].startswith("-"):
+        return False, "tests/skill_contract.json verification.test_command executable is invalid"
+    return True, None
+
+
+def _verification_command(skill_path, contract):
+    """Return the validated test argv, preferring an explicit contract command."""
+    if isinstance(contract, dict):
+        verification = contract.get("verification")
+        if isinstance(verification, dict) and "test_command" in verification:
+            command = verification["test_command"]
+            valid, message = _validate_verification_command(contract)
+            if not valid:
+                raise ValueError(message)
+            return list(command)
+    test_root = skill_path / "tests"
+    if not test_root.is_dir() or test_root.is_symlink():
+        raise ValueError("Engineering publish gate requires an executable tests/ directory")
+    test_files = [
+        path for path in test_root.rglob(DEFAULT_TEST_PATTERN)
+        if path.is_file() and not path.is_symlink() and not any(part in EXCLUDED_DIRS for part in path.relative_to(skill_path).parts)
+    ]
+    if not test_files:
+        raise ValueError("Engineering publish gate requires at least one tests/test_*.py file")
+    return [sys.executable, "-m", "unittest", "discover", "-s", "tests", "-p", DEFAULT_TEST_PATTERN, "-v"]
+
+
+def _run_verification_tests(skill_path, contract):
+    """Execute the contract/default test command and return a concise result."""
+    command = _verification_command(skill_path, contract)
+    executable = command[0]
+    if not os.path.isabs(executable) and shutil.which(executable) is None:
+        raise ValueError(f"Engineering verification executable not found: {executable}")
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=skill_path,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=VERIFICATION_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        output = (exc.stdout or "") + (exc.stderr or "")
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+        output = output[-MAX_VERIFICATION_OUTPUT:]
+        raise ValueError(
+            f"Engineering verification timed out after {VERIFICATION_TIMEOUT_SECONDS}s; command={command!r}; output={output!r}"
+        ) from exc
+    except (OSError, UnicodeError) as exc:
+        raise ValueError(f"Engineering verification could not run command={command!r}: {exc}") from exc
+    output = ((completed.stdout or "") + (completed.stderr or ""))[-MAX_VERIFICATION_OUTPUT:]
+    if completed.returncode:
+        raise ValueError(
+            f"Engineering verification failed (exit {completed.returncode}); command={command!r}; output={output!r}"
+        )
+    return command
+
+
+def _validate_contract(skill_path):
+    contract, error = _load_contract(skill_path)
+    if error:
+        return False, error
+    if contract is None:
+        return True, "No optional engineering contract"
     if not isinstance(contract, dict) or contract.get("schema_version") != 1:
         return False, "tests/skill_contract.json must be an object with schema_version 1"
+    valid, message = _validate_verification_command(contract)
+    if not valid:
+        return False, message
     sections = contract.get("sections")
     if not isinstance(sections, dict) or set(sections) != REQUIRED_CONTRACT_SECTIONS:
         return False, "tests/skill_contract.json sections must be routing, behavior, and completion"
@@ -757,7 +873,12 @@ def validate_engineering_contract(skill_path):
     git_report = inspect_git_versioning(skill_path)
     if git_report["status"] != "versioned_clean":
         return False, f"Engineering publish gate requires source Git provenance: {git_report['message']}"
-    return True, "Engineering contract is valid"
+    try:
+        command = _run_verification_tests(skill_path, _load_contract(skill_path)[0])
+    except ValueError as exc:
+        return False, str(exc)
+    rendered_command = " ".join(command)
+    return True, f"Engineering contract is valid; verification passed: {rendered_command}"
 
 
 def main(argv=None):
@@ -767,7 +888,9 @@ def main(argv=None):
         "--require-contract", action="store_true", help="Require tests/skill_contract.json; does not imply --engineering"
     )
     parser.add_argument(
-        "--engineering", action="store_true", help="Require publish-grade metadata, contract, tests, and clean Git provenance"
+        "--engineering",
+        action="store_true",
+        help="Require publish-grade metadata, contract, executable tests, and clean Git provenance",
     )
     parser.add_argument("--git", action="store_true", help="Inspect source Git provenance for the supplied Skill path")
     parser.add_argument("--json", action="store_true", help="Emit Git inspection JSON; valid only with --git")

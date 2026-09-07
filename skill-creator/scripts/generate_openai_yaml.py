@@ -13,6 +13,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+
+MAX_SKILL_NAME_LENGTH = 64
+SKILL_NAME_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
 ACRONYMS = {
     "GH",
     "MCP",
@@ -50,8 +54,29 @@ ALLOWED_INTERFACE_KEYS = {
 
 
 def yaml_quote(value):
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
-    return f'"{escaped}"'
+    if not isinstance(value, str):
+        raise ValueError("YAML interface values must be strings")
+    escaped_parts = []
+    for char in value:
+        codepoint = ord(char)
+        # Reject all Unicode control/surrogate code points.  C1 controls and
+        # lone surrogates are not safe in emitted UTF-8 YAML either.
+        if codepoint < 0x20 or 0x7F <= codepoint <= 0x9F or 0xD800 <= codepoint <= 0xDFFF:
+            if char == "\n":
+                escaped_parts.append("\\n")
+            elif char == "\r":
+                escaped_parts.append("\\r")
+            elif char == "\t":
+                escaped_parts.append("\\t")
+            else:
+                raise ValueError("YAML interface values must not contain control characters")
+        elif char == "\\":
+            escaped_parts.append("\\\\")
+        elif char == '"':
+            escaped_parts.append('\\"')
+        else:
+            escaped_parts.append(char)
+    return f'"{"".join(escaped_parts)}"'
 
 
 def format_display_name(skill_name):
@@ -104,11 +129,28 @@ def generate_short_description(display_name):
 
 
 def read_frontmatter_name(skill_dir):
-    skill_md = Path(skill_dir) / "SKILL.md"
+    raw_skill_dir = Path(skill_dir)
+    if raw_skill_dir.is_symlink():
+        print("[ERROR] Skill directory must not be a symlink")
+        return None
+    if not raw_skill_dir.is_dir():
+        print(f"[ERROR] Skill directory not found: {raw_skill_dir}")
+        return None
+    skill_md = raw_skill_dir / "SKILL.md"
+    if skill_md.is_symlink():
+        print("[ERROR] SKILL.md must not be a symlink")
+        return None
     if not skill_md.exists():
         print(f"[ERROR] SKILL.md not found in {skill_dir}")
         return None
-    content = skill_md.read_text(encoding="utf-8").lstrip("\ufeff").replace("\r\n", "\n")
+    if not skill_md.is_file():
+        print("[ERROR] SKILL.md must be a regular file")
+        return None
+    try:
+        content = skill_md.read_text(encoding="utf-8").lstrip("\ufeff").replace("\r\n", "\n")
+    except (OSError, UnicodeError) as exc:
+        print(f"[ERROR] Cannot read {skill_md}: {exc}")
+        return None
     match = re.match(r"^---\n(.*?)\n---", content, re.DOTALL)
     if not match:
         print("[ERROR] Invalid SKILL.md frontmatter format.")
@@ -131,12 +173,27 @@ def read_frontmatter_name(skill_dir):
     if not isinstance(name, str) or not name.strip():
         print("[ERROR] Frontmatter 'name' is missing or invalid.")
         return None
-    return name.strip()
+    name = name.strip()
+    if not SKILL_NAME_PATTERN.fullmatch(name):
+        print("[ERROR] Frontmatter 'name' must use lowercase hyphen-case.")
+        return None
+    if len(name) > MAX_SKILL_NAME_LENGTH:
+        print(
+            "[ERROR] Frontmatter 'name' is too long "
+            f"({len(name)} characters; maximum is {MAX_SKILL_NAME_LENGTH})."
+        )
+        return None
+    return name
 
 
 def _parse_simple_frontmatter(text):
     def strip_comment(value):
         quote = None
+        collection_stack = []
+        # Brackets in a plain scalar (for example ``description: use [x]``)
+        # are legal YAML.  Track nesting only for flow collections that start
+        # at the beginning of the scalar.
+        collection_mode = value.lstrip().startswith(("[", "{"))
         index = 0
         while index < len(value):
             char = value[index]
@@ -150,31 +207,63 @@ def _parse_simple_frontmatter(text):
                 continue
             if char in "'\"":
                 quote = char
-            elif char == "#" and (index == 0 or value[index - 1].isspace()):
+            elif collection_mode and char in "[{":
+                collection_stack.append("]" if char == "[" else "}")
+            elif collection_mode and char in "]}":
+                if not collection_stack or collection_stack.pop() != char:
+                    raise ValueError("fallback parser found an unmatched collection marker")
+            elif char == "#" and not collection_stack and (index == 0 or value[index - 1].isspace()):
                 return value[:index].rstrip()
             index += 1
-        if quote:
-            raise ValueError("fallback parser found an unclosed quoted scalar")
+        if quote or collection_stack:
+            raise ValueError("fallback parser found an unclosed quote or collection")
         return value.strip()
 
+    def parse_scalar(value):
+        value = strip_comment(value.strip())
+        if not value:
+            return ""
+        if value[0] in "'\"":
+            if len(value) < 2 or value[-1] != value[0]:
+                raise ValueError("fallback parser found an unclosed quoted scalar")
+            if value[0] == "'":
+                return value[1:-1].replace("''", "'")
+            # JSON decoding keeps double-quoted escape handling deterministic.
+            import json
+
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"fallback parser found an invalid quoted scalar: {exc.msg}") from exc
+        if value.startswith("["):
+            if not value.endswith("]"):
+                raise ValueError("fallback parser found an unclosed collection")
+            return []
+        if value.startswith("{"):
+            if not value.endswith("}"):
+                raise ValueError("fallback parser found an unclosed collection")
+            return {}
+        if value in {"true", "True", "TRUE"}:
+            return True
+        if value in {"false", "False", "FALSE"}:
+            return False
+        if value in {"null", "Null", "NULL", "~"}:
+            return None
+        return value
+
     result = {}
-    for line in text.splitlines():
+    for line_number, line in enumerate(text.splitlines(), 1):
         if not line.strip() or line.lstrip().startswith("#"):
             continue
         if ":" not in line:
-            raise ValueError("fallback parser accepts scalar fields")
+            raise ValueError(f"fallback parser accepts scalar fields at line {line_number}")
         if line[0].isspace():
             continue
         key, value = line.split(":", 1)
-        value = strip_comment(value.strip())
-        if not value:
-            continue
-        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
-            if value.startswith("'"):
-                value = value[1:-1].replace("''", "'")
-            else:
-                value = value[1:-1]
-        result[key.strip()] = value
+        key = key.strip()
+        if not key:
+            raise ValueError(f"fallback parser requires a non-empty key at line {line_number}")
+        result[key] = parse_scalar(value)
     return result
 
 
@@ -322,11 +411,28 @@ def write_openai_yaml(skill_dir, skill_name, raw_overrides):
     if overrides is None:
         return None
 
+    if not isinstance(skill_name, str) or not SKILL_NAME_PATTERN.fullmatch(skill_name):
+        print("[ERROR] Skill name must use lowercase hyphen-case.")
+        return None
+    if len(skill_name) > MAX_SKILL_NAME_LENGTH:
+        print(
+            "[ERROR] Skill name is too long "
+            f"({len(skill_name)} characters; maximum is {MAX_SKILL_NAME_LENGTH})."
+        )
+        return None
+
     raw_skill_dir = Path(skill_dir)
     if raw_skill_dir.is_symlink() or not raw_skill_dir.is_dir():
         print("[ERROR] Skill directory must be a real directory")
         return None
     skill_dir = raw_skill_dir.resolve()
+    skill_md = skill_dir / "SKILL.md"
+    if skill_md.is_symlink():
+        print("[ERROR] SKILL.md must not be a symlink")
+        return None
+    if not skill_md.is_file():
+        print("[ERROR] SKILL.md must be a regular file")
+        return None
     agents_dir = skill_dir / "agents"
     if agents_dir.is_symlink():
         print("[ERROR] agents directory must not be a symlink")
@@ -337,6 +443,9 @@ def write_openai_yaml(skill_dir, skill_name, raw_overrides):
     output_path = agents_dir / "openai.yaml"
     if output_path.is_symlink():
         print("[ERROR] agents/openai.yaml must not be a symlink")
+        return None
+    if output_path.exists() and not output_path.is_file():
+        print("[ERROR] agents/openai.yaml must be a regular file")
         return None
     existing = _read_existing_interface(output_path)
     if existing is None:
@@ -360,12 +469,16 @@ def write_openai_yaml(skill_dir, skill_name, raw_overrides):
         print("[ERROR] default_prompt must be a non-empty string.")
         return None
 
-    interface_lines = [
-        "interface:",
-        f"  display_name: {yaml_quote(display_name)}",
-        f"  short_description: {yaml_quote(short_description)}",
-        f"  default_prompt: {yaml_quote(default_prompt)}",
-    ]
+    try:
+        interface_lines = [
+            "interface:",
+            f"  display_name: {yaml_quote(display_name)}",
+            f"  short_description: {yaml_quote(short_description)}",
+            f"  default_prompt: {yaml_quote(default_prompt)}",
+        ]
+    except ValueError as exc:
+        print(f"[ERROR] Cannot encode interface metadata: {exc}")
+        return None
 
     # Keep existing optional fields (icons/brand color) unless explicitly
     # replaced.  Regenerating UI metadata must not silently erase them.
@@ -376,15 +489,23 @@ def write_openai_yaml(skill_dir, skill_name, raw_overrides):
     for key in optional_keys:
         value = overrides.get(key, existing.get(key))
         if value is not None and value != "":
-            interface_lines.append(f"  {key}: {yaml_quote(value)}")
+            try:
+                interface_lines.append(f"  {key}: {yaml_quote(value)}")
+            except ValueError as exc:
+                print(f"[ERROR] Cannot encode interface metadata: {exc}")
+                return None
 
     agents_dir.mkdir(parents=True, exist_ok=True)
     existing_mode = (output_path.stat().st_mode & 0o777) if output_path.is_file() else 0o644
-    if output_path.is_file():
-        original = output_path.read_text(encoding="utf-8")
-        content = _merge_interface_block(original, interface_lines)
-    else:
-        content = "\n".join(interface_lines) + "\n"
+    try:
+        if output_path.is_file():
+            original = output_path.read_text(encoding="utf-8")
+            content = _merge_interface_block(original, interface_lines)
+        else:
+            content = "\n".join(interface_lines) + "\n"
+    except (OSError, UnicodeError) as exc:
+        print(f"[ERROR] Cannot read existing {output_path}: {exc}")
+        return None
     # Replace the destination atomically so a later path swap cannot redirect
     # the write through a symlink outside the Skill.
     descriptor, temporary = tempfile.mkstemp(prefix=".openai.yaml.", dir=agents_dir)
@@ -395,12 +516,13 @@ def write_openai_yaml(skill_dir, skill_name, raw_overrides):
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary, output_path)
-    except Exception:
+    except (OSError, UnicodeError) as exc:
         try:
             os.unlink(temporary)
         except OSError:
             pass
-        raise
+        print(f"[ERROR] Cannot write {output_path}: {exc}")
+        return None
     print(f"[OK] Created agents/openai.yaml")
     return output_path
 

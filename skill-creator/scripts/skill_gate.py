@@ -10,9 +10,11 @@ import importlib.util
 import json
 import math
 import os
+import shlex
 import shutil
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 
@@ -20,9 +22,17 @@ IGNORED_DIRS = {"__pycache__", ".git", ".skill-evals"}
 IGNORED_SUFFIXES = {".pyc", ".pyo"}
 
 
+def _as_path(value, label):
+    """Convert a caller-supplied path and normalize malformed types."""
+    try:
+        return Path(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be a filesystem path") from exc
+
+
 def _reject_symlink_components(path, label):
     """Reject symlink path components without rejecting macOS /var and /tmp aliases."""
-    raw = Path(path)
+    raw = _as_path(path, label)
     if not raw.is_absolute():
         raw = Path.cwd() / raw
     current = Path(raw.anchor)
@@ -58,15 +68,181 @@ def _sha256_hex(value, label):
     return value
 
 
+_REJECTED_EVALUATOR_NAMES = {"manual", "unknown", "untrusted"}
+
+
+def _parse_evaluator_command(value, label):
+    """Normalize a command declaration without invoking a shell or process."""
+    if isinstance(value, str):
+        if not value.strip():
+            raise ValueError(f"{label} must be a non-empty command")
+        try:
+            command = shlex.split(value)
+        except ValueError as exc:
+            raise ValueError(f"{label} is not valid shell-free command syntax") from exc
+    elif isinstance(value, (list, tuple)):
+        command = list(value)
+    else:
+        raise ValueError(f"{label} must be a command string or list of tokens")
+    if not command or any(not isinstance(token, str) or not token.strip() for token in command):
+        raise ValueError(f"{label} must contain non-empty string tokens")
+    # A gate never executes this value; reject shell control tokens so a later
+    # consumer cannot reinterpret a supposedly immutable declaration.
+    if any(any(character in token for character in ";&|<>\n\r") for token in command):
+        raise ValueError(f"{label} must not contain shell control characters")
+    return command
+
+
+def _validate_evaluator_files(manifest, manifest_path, *, require_hash, label):
+    """Validate evaluator file hashes and keep every path inside the manifest."""
+    raw_files = manifest.get("evaluator_files") if isinstance(manifest, Mapping) else None
+    if not isinstance(raw_files, Mapping) or not raw_files:
+        raise ValueError(f"{label}: evaluator_files must be a non-empty mapping of relative paths to SHA-256 hashes")
+    if manifest_path is None:
+        if require_hash:
+            raise ValueError(f"{label}: evaluator manifest path is required to verify evaluator_files")
+        return {}
+    base = _as_path(manifest_path, "manifest").resolve().parent
+    normalized = {}
+    for filename, expected in raw_files.items():
+        if not isinstance(filename, str) or not filename.strip():
+            raise ValueError(f"{label}: evaluator_files keys must be relative filenames")
+        relative = PurePosixPath(filename)
+        if relative.is_absolute() or ".." in relative.parts or any(part == "" for part in relative.parts):
+            raise ValueError(f"{label}: evaluator_files key must stay inside the manifest directory")
+        canonical_name = relative.as_posix()
+        if canonical_name in normalized:
+            raise ValueError(f"{label}: evaluator_files contains duplicate path {canonical_name!r}")
+        target = base.joinpath(*relative.parts)
+        _reject_symlink_components(target, f"{label}: evaluator_files entry")
+        if target.is_symlink() or not target.is_file():
+            raise ValueError(f"{label}: evaluator_files entry is missing or symlinked: {filename}")
+        if not isinstance(expected, str):
+            if require_hash:
+                raise ValueError(f"{label}: evaluator_files[{filename!r}] must be a SHA-256 digest")
+            # Legacy line-count metadata remains parseable for inactive
+            # scaffolds, but can never satisfy a release gate.
+            if isinstance(expected, bool) or not isinstance(expected, int) or expected < 1:
+                raise ValueError(f"{label}: evaluator_files[{filename!r}] must be a SHA-256 digest or positive line count")
+            normalized[canonical_name] = expected
+            continue
+        _sha256_hex(expected, f"{label}: evaluator_files[{filename!r}]")
+        if file_sha256(target) != expected:
+            raise ValueError(f"{label}: evaluator_files[{filename!r}] byte fingerprint does not match")
+        normalized[canonical_name] = expected
+    return normalized
+
+
+def _validate_evaluator_declaration(manifest, manifest_path=None, *, require_executable=False, label="evaluator"):
+    """Validate evaluator identity; strict mode is used by quality gates."""
+    if not isinstance(manifest, Mapping):
+        raise ValueError(f"{label}: manifest must be an object")
+    evaluator = manifest.get("evaluator")
+    if not isinstance(evaluator, Mapping):
+        raise ValueError(f"{label}: evaluator provenance is missing")
+    name = evaluator.get("name")
+    version = evaluator.get("version")
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError(f"{label}: evaluator.name must be non-empty")
+    if not isinstance(version, str) or not version.strip():
+        raise ValueError(f"{label}: evaluator.version must be non-empty")
+    # Reject human/manual labels before inspecting optional executable fields so
+    # an explicitly disallowed evaluator cannot be disguised by malformed or
+    # incomplete provenance metadata.
+    if require_executable and name.strip().lower() in _REJECTED_EVALUATOR_NAMES:
+        raise ValueError(
+            f"{label}: manual/untrusted evaluator (manual/unknown/untrusted name) cannot be used as a trusted gate; "
+            "provide an independently reproducible evaluator"
+        )
+    trust = manifest.get("evaluator_trust")
+    if trust is not None and (not isinstance(trust, str) or trust not in {"trusted", "untrusted"}):
+        raise ValueError(f"{label}: evaluator_trust must be 'trusted' or 'untrusted'")
+    command_value = manifest.get("evaluator_command")
+    files_value = manifest.get("evaluator_files")
+    if (command_value is None) != (files_value is None):
+        raise ValueError(f"{label}: evaluator_command and evaluator_files must be declared together")
+    if command_value is None:
+        if require_executable:
+            raise ValueError(
+                f"{label}: evaluator is not executable/authenticated; provide evaluator_command and hashed evaluator_files"
+            )
+        return
+    command = _parse_evaluator_command(command_value, f"{label}: evaluator_command")
+    files = _validate_evaluator_files(
+        manifest,
+        manifest_path,
+        require_hash=require_executable,
+        label=label,
+    )
+    normalized_files = set(files)
+    # At least one command token must name a hashed local evaluator file. This
+    # prevents a bare, unverifiable command from being presented as evidence.
+    referenced = set()
+    base = _as_path(manifest_path, "manifest").resolve().parent if manifest_path is not None else None
+    for token in command:
+        token_path = PurePosixPath(token)
+        token_name = token_path.as_posix().removeprefix("./")
+        if token_name in normalized_files:
+            referenced.add(token_name)
+            continue
+        if base is not None and token_path.is_absolute():
+            try:
+                absolute = _as_path(token, "evaluator command token").resolve()
+            except (OSError, RuntimeError, ValueError):
+                continue
+            for filename in normalized_files:
+                if absolute == (base / filename).resolve():
+                    referenced.add(filename)
+    if require_executable:
+        if trust != "trusted":
+            raise ValueError(f"{label}: evaluator_trust must be 'trusted' for a quality gate")
+        if not referenced:
+            raise ValueError(f"{label}: evaluator_command must reference at least one hashed evaluator_files entry")
+    return {"command": command, "files": files}
+
+
+def _require_trusted_evaluator(manifest, label, manifest_path=None):
+    """Require a reproducible evaluator before selection, holdout, or adopt."""
+    _validate_evaluator_declaration(
+        manifest,
+        manifest_path,
+        require_executable=True,
+        label=label,
+    )
+
+
+def _reject_same_fingerprint(current_fingerprint, candidate_fingerprint, label):
+    """A selection candidate must represent a distinct Skill tree."""
+    if not isinstance(current_fingerprint, dict) or not isinstance(candidate_fingerprint, dict):
+        raise ValueError(f"{label}: Skill fingerprint records are invalid")
+    current = current_fingerprint.get("sha256")
+    candidate = candidate_fingerprint.get("sha256")
+    if isinstance(current, str) and current == candidate:
+        raise ValueError(f"{label}: current and candidate Skill fingerprints are identical")
+
+
+def _coerce_finite_score(value, label):
+    """Normalize JSON numeric values without letting huge integers escape."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{label} has non-finite numeric score")
+    try:
+        normalized = float(value)
+    except (OverflowError, ValueError, TypeError) as exc:
+        raise ValueError(f"{label} has non-finite numeric score") from exc
+    if not math.isfinite(normalized):
+        raise ValueError(f"{label} has non-finite numeric score")
+    return normalized
+
+
 def load_manifest(path):
-    raw_path = Path(path)
+    raw_path = _as_path(path, "manifest")
     _reject_symlink_components(raw_path, "manifest")
     if raw_path.is_symlink():
         raise ValueError(f"manifest must not be a symlink: {raw_path}")
     path = raw_path.resolve()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         raise ValueError(f"cannot read manifest {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{path}: manifest must be an object")
@@ -128,8 +304,9 @@ def load_manifest(path):
                 continue
             try:
                 item = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"{split_path}:{line_number}: invalid JSON: {exc.msg}") from exc
+            except (json.JSONDecodeError, ValueError) as exc:
+                detail = getattr(exc, "msg", str(exc))
+                raise ValueError(f"{split_path}:{line_number}: invalid JSON: {detail}") from exc
             case_id = item.get("id") if isinstance(item, dict) else None
             if not isinstance(case_id, str) or not case_id.strip():
                 raise ValueError(f"{split_path}:{line_number}: each case needs a non-empty string id")
@@ -142,9 +319,15 @@ def load_manifest(path):
     source_hash = data.get("source_sha256")
     if not isinstance(source, str) or not source.strip():
         raise ValueError(f"{path}: manifest source must be a non-empty path")
-    source_path = Path(source)
+    source_path = _as_path(source, f"{path}: manifest source")
     if not source_path.is_absolute():
+        # Relative source references are confined to the manifest directory;
+        # rejecting traversal components also keeps the provenance target
+        # stable if an ancestor is later replaced.
+        if ".." in source_path.parts:
+            raise ValueError(f"{path}: relative manifest source must stay inside the manifest directory")
         source_path = path.parent / source_path
+    _reject_symlink_components(source_path, f"{path}: source corpus")
     if source_path.is_symlink():
         raise ValueError(f"{path}: source corpus must not be a symlink")
     source_path = source_path.resolve()
@@ -169,7 +352,7 @@ def load_manifest(path):
                 raise ValueError(f"{source_path}:{line_number}: duplicate source case id {case_id!r}")
             source_ids.append(case_id)
             source_records[case_id] = item
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"{path}: cannot parse source corpus IDs: {exc}") from exc
     declared_ids = [case_id for split in ("train", "selection", "holdout") for case_id in splits[split]]
     if set(declared_ids) != set(source_ids) or len(declared_ids) != len(source_ids):
@@ -190,13 +373,13 @@ def load_manifest(path):
 
     alias_path = path.parent / "test.jsonl"
     alias_hash = data.get("holdout_alias_sha256")
+    if alias_path.is_symlink():
+        raise ValueError(f"{path}: test.jsonl must not be a symlink")
     if alias_hash is not None:
         _sha256_hex(alias_hash, f"{path}: holdout_alias_sha256")
         if not alias_path.is_file():
             raise ValueError(f"{path}: holdout_alias_sha256 requires test.jsonl")
     if alias_path.exists():
-        if alias_path.is_symlink():
-            raise ValueError(f"{path}: test.jsonl must not be a symlink")
         actual_alias_hash = file_sha256(alias_path)
         if actual_alias_hash != split_files["holdout"]["sha256"]:
             raise ValueError(f"{path}: test.jsonl must be byte-identical to holdout.jsonl")
@@ -213,40 +396,19 @@ def load_manifest(path):
         raise ValueError(f"{path}: evaluator.name must be non-empty")
     if not isinstance(evaluator.get("version"), str) or not evaluator["version"].strip():
         raise ValueError(f"{path}: evaluator.version must be non-empty")
-    evaluator_files = data.get("evaluator_files")
-    if evaluator_files is not None:
-        if not isinstance(evaluator_files, dict):
-            raise ValueError(f"{path}: evaluator_files must be an object")
-        for filename, expected in evaluator_files.items():
-            if not isinstance(filename, str) or not filename:
-                raise ValueError(f"{path}: evaluator_files keys must be relative filenames")
-            relative = PurePosixPath(filename)
-            if relative.is_absolute() or ".." in relative.parts:
-                raise ValueError(f"{path}: evaluator_files key must stay inside the manifest directory")
-            target = path.parent / relative
-            _reject_symlink_components(target, f"{path}: evaluator_files entry")
-            if target.is_symlink():
-                raise ValueError(f"{path}: evaluator_files entry must not be a symlink: {filename}")
-            if not target.is_file():
-                raise ValueError(f"{path}: evaluator_files entry is missing: {filename}")
-            if isinstance(expected, str):
-                _sha256_hex(expected, f"{path}: evaluator_files[{filename!r}]")
-                if file_sha256(target) != expected:
-                    raise ValueError(f"{path}: evaluator_files[{filename!r}] byte fingerprint does not match")
-            elif isinstance(expected, int) and not isinstance(expected, bool):
-                if expected < 1:
-                    raise ValueError(f"{path}: evaluator_files[{filename!r}] count must be positive")
-                line_count = sum(1 for line in target.read_text(encoding="utf-8").splitlines() if line.strip())
-                if line_count != expected:
-                    raise ValueError(f"{path}: evaluator_files[{filename!r}] count does not match")
-            else:
-                raise ValueError(f"{path}: evaluator_files[{filename!r}] must be a SHA-256 digest or line count")
+    evaluator_trust = data.get("evaluator_trust")
+    if evaluator_trust is not None and (not isinstance(evaluator_trust, str) or evaluator_trust not in {"trusted", "untrusted"}):
+        raise ValueError(f"{path}: evaluator_trust must be 'trusted' or 'untrusted'")
+    # Validate optional evaluator declaration and its local file provenance.
+    # Strict executable/trust requirements are applied only by quality gates;
+    # inactive manifests may still be loaded for diagnostics.
+    _validate_evaluator_declaration(data, path, require_executable=False, label=f"{path}: evaluator")
     return data
 
 
 def file_sha256(path):
     """Return the hash of an immutable evaluator manifest or result input."""
-    path = Path(path)
+    path = _as_path(path, "immutable input")
     _reject_symlink_components(path, "immutable input")
     if path.is_symlink():
         raise ValueError(f"immutable input must not be a symlink: {path}")
@@ -255,7 +417,7 @@ def file_sha256(path):
 
 def _finite_mean(values, label):
     """Calculate a finite aggregate, rejecting overflow instead of emitting Infinity."""
-    values = list(values)
+    values = [_coerce_finite_score(value, f"{label} score") for value in values]
     if not values:
         raise ValueError(f"{label} score set must not be empty")
     try:
@@ -269,14 +431,18 @@ def _finite_mean(values, label):
 
 
 def load_results(path, expected_split="selection", expected_ids=None, manifest_sha256=None):
-    path = Path(path)
+    path = _as_path(path, "result artifact")
     _reject_symlink_components(path, "result artifact")
     if path.is_symlink():
         raise ValueError(f"result artifact must not be a symlink: {path}")
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        raise ValueError(f"cannot read {path}: {exc}") from exc
+    except (OSError, ValueError) as exc:
+        # Python may reject an oversized JSON integer before returning the
+        # object (for example, its integer-string safety limit). Keep this at
+        # the gate's normal invalid-artifact boundary instead of leaking it as
+        # an uncaught parser exception.
+        raise ValueError(f"cannot read {path}: invalid or non-finite JSON numeric value: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"{path}: result artifact must be an object")
     if data.get("schema_version") != 1:
@@ -299,11 +465,9 @@ def load_results(path, expected_split="selection", expected_ids=None, manifest_s
             raise ValueError(f"{path}: results[{index}] has invalid id")
         if case_id in results:
             raise ValueError(f"{path}: duplicate result id {case_id!r}")
-        if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
-            raise ValueError(f"{path}: result {case_id!r} has non-finite numeric score")
         if not isinstance(evidence, str) or not evidence.strip():
             raise ValueError(f"{path}: result {case_id!r} needs non-empty evidence")
-        results[case_id] = float(score)
+        results[case_id] = _coerce_finite_score(score, f"{path}: result {case_id!r}")
     if expected_ids is not None and set(results) != set(expected_ids):
         missing = sorted(set(expected_ids) - set(results))
         extra = sorted(set(results) - set(expected_ids))
@@ -313,7 +477,7 @@ def load_results(path, expected_split="selection", expected_ids=None, manifest_s
 
 def skill_tree_fingerprint(skill_dir):
     """Hash relative paths, modes, and bytes for a portable Skill snapshot."""
-    raw_skill_dir = Path(skill_dir)
+    raw_skill_dir = _as_path(skill_dir, "Skill directory")
     _reject_symlink_components(raw_skill_dir, "Skill directory")
     if raw_skill_dir.is_symlink():
         raise ValueError(f"Skill snapshots cannot use a symlinked directory: {raw_skill_dir}")
@@ -338,16 +502,34 @@ def skill_tree_fingerprint(skill_dir):
 
 
 def evaluate_gate(current_results, candidate_results, no_regression=True, min_delta=0.0):
+    if not isinstance(current_results, Mapping) or not isinstance(candidate_results, Mapping):
+        raise ValueError("current_results and candidate_results must be mappings")
+    if not isinstance(no_regression, bool):
+        raise ValueError("no_regression must be boolean")
     current_ids, candidate_ids = set(current_results), set(candidate_results)
     if current_ids != candidate_ids:
         missing = sorted(current_ids - candidate_ids)
         extra = sorted(candidate_ids - current_ids)
         raise ValueError(f"incomparable result IDs; missing={missing}, extra={extra}")
-    if not isinstance(min_delta, (int, float)) or not math.isfinite(min_delta) or min_delta < 0:
+    min_delta = _coerce_finite_score(min_delta, "min_delta")
+    if min_delta < 0:
         raise ValueError("min_delta must be a finite non-negative number")
+    current_results = {
+        case_id: _coerce_finite_score(score, f"current result {case_id!r}")
+        for case_id, score in current_results.items()
+    }
+    candidate_results = {
+        case_id: _coerce_finite_score(score, f"candidate result {case_id!r}")
+        for case_id, score in candidate_results.items()
+    }
     current_score = _finite_mean(current_results.values(), "current selection")
     candidate_score = _finite_mean(candidate_results.values(), "candidate selection")
-    deltas = {case_id: candidate_results[case_id] - current_results[case_id] for case_id in sorted(current_ids)}
+    deltas = {}
+    for case_id in sorted(current_ids):
+        case_delta = candidate_results[case_id] - current_results[case_id]
+        if not math.isfinite(case_delta):
+            raise ValueError(f"selection score delta for {case_id!r} is non-finite")
+        deltas[case_id] = case_delta
     regressions = [case_id for case_id, delta in deltas.items() if delta < 0]
     delta = candidate_score - current_score
     if not math.isfinite(delta):
@@ -375,6 +557,10 @@ def evaluate_gate(current_results, candidate_results, no_regression=True, min_de
 
 
 def _assert_result_provenance(data, expected_fingerprint, evaluator, label):
+    if not isinstance(data, Mapping):
+        raise ValueError(f"{label}: result artifact must be an object")
+    if not isinstance(expected_fingerprint, Mapping) or not isinstance(evaluator, Mapping):
+        raise ValueError(f"{label}: result provenance records are invalid")
     declared = data.get("skill_fingerprint")
     if declared != expected_fingerprint["sha256"]:
         raise ValueError(
@@ -389,7 +575,7 @@ def _assert_result_provenance(data, expected_fingerprint, evaluator, label):
 
 def _write_json_atomic(path, value):
     """Write a report through a same-directory temporary file and replace."""
-    path = Path(path)
+    path = _as_path(path, "report path")
     _reject_symlink_components(path, "report path")
     if path.is_symlink():
         raise ValueError(f"report path must not be a symlink: {path}")
@@ -413,12 +599,12 @@ def _write_json_atomic(path, value):
 
 
 def _copy_skill_tree(source, destination):
-    raw_source = Path(source)
+    raw_source = _as_path(source, "Skill source")
     _reject_symlink_components(raw_source, "Skill source")
     if raw_source.is_symlink():
         raise ValueError(f"Skill snapshots cannot copy a symlinked directory: {raw_source}")
     source = raw_source.resolve()
-    destination = Path(destination)
+    destination = _as_path(destination, "snapshot destination")
     _reject_symlink_components(destination, "snapshot destination")
     if destination.parent.is_symlink():
         raise ValueError(f"snapshot parent must not be a symlink: {destination.parent}")
@@ -438,12 +624,12 @@ def _copy_skill_tree(source, destination):
 
 def _copy_git_metadata(source, destination):
     """Preserve a standalone target repository's .git entry during adoption."""
-    source_git = Path(source) / ".git"
+    source_git = _as_path(source, "Skill source") / ".git"
     if not source_git.exists():
         return
     if source_git.is_symlink():
         raise ValueError("target Skill .git entry must not be a symlink")
-    destination_git = Path(destination) / ".git"
+    destination_git = _as_path(destination, "snapshot destination") / ".git"
     if destination_git.exists() or destination_git.is_symlink():
         raise ValueError("replacement Skill already contains a .git entry")
     if source_git.is_dir():
@@ -453,7 +639,9 @@ def _copy_git_metadata(source, destination):
 
 
 def stage_candidate(candidate_skill, state_dir, report, dry_run=False):
-    raw_candidate_skill = Path(candidate_skill)
+    raw_candidate_skill = _as_path(candidate_skill, "candidate Skill")
+    if not isinstance(report, Mapping):
+        raise ValueError("selection gate report must be an object")
     if raw_candidate_skill.is_symlink() or not raw_candidate_skill.is_dir():
         raise ValueError(f"candidate Skill directory does not exist: {candidate_skill}")
     candidate_skill = raw_candidate_skill.resolve()
@@ -463,7 +651,7 @@ def stage_candidate(candidate_skill, state_dir, report, dry_run=False):
     _validate_candidate_structure(candidate_skill, require_engineering=True)
     if skill_tree_fingerprint(candidate_skill)["sha256"] != source_fingerprint["sha256"]:
         raise ValueError("candidate Skill changed during engineering validation")
-    raw_state_dir = Path(state_dir)
+    raw_state_dir = _as_path(state_dir, "state_dir")
     _reject_symlink_components(raw_state_dir, "state_dir")
     if raw_state_dir.is_symlink():
         raise ValueError("state_dir must not be a symlink")
@@ -612,7 +800,7 @@ def _manifest_split_context(manifest):
 
 def _result_artifact_record(path, data, expected_split, expected_ids, expected_fingerprint, manifest_hash, evaluator):
     """Reload and hash a result artifact for later tamper detection."""
-    raw_artifact_path = Path(path)
+    raw_artifact_path = _as_path(path, "result artifact")
     _reject_symlink_components(raw_artifact_path, "result artifact")
     if raw_artifact_path.is_symlink():
         raise ValueError(f"result artifact must not be a symlink: {raw_artifact_path}")
@@ -641,7 +829,7 @@ def _assert_result_artifact_record(record, manifest_hash, expected_split, expect
     required = {"path", "sha256", "split", "id_sha256", "count", "skill_fingerprint", "evaluator"}
     if set(record) != required:
         raise ValueError(f"{label}: result artifact record schema is invalid")
-    raw_path = Path(record["path"])
+    raw_path = _as_path(record["path"], f"{label}: result artifact")
     _reject_symlink_components(raw_path, f"{label}: result artifact")
     if raw_path.is_symlink():
         raise ValueError(f"{label}: result artifact must not be a symlink")
@@ -683,9 +871,10 @@ def _validate_selection_report(report, manifest, manifest_hash, staged_fingerpri
         raise ValueError("selection gate report schema or purpose is invalid")
     if report.get("action") != "accept":
         raise ValueError("selection gate report is not an accepted run")
+    _require_trusted_evaluator(manifest, "selection gate", manifest_path)
     if report.get("manifest_sha256") != manifest_hash or report.get("evaluator") != manifest["evaluator"]:
         raise ValueError("selection gate report manifest or evaluator does not match")
-    if manifest_path is not None and report.get("manifest") != str(Path(manifest_path).resolve()):
+    if manifest_path is not None and report.get("manifest") != str(_as_path(manifest_path, "manifest").resolve()):
         raise ValueError("selection gate report manifest path does not match")
     if report.get("selection_ids") != manifest["splits"]["selection"]:
         raise ValueError("selection gate report selection IDs do not match")
@@ -693,6 +882,9 @@ def _validate_selection_report(report, manifest, manifest_hash, staged_fingerpri
         raise ValueError("selection gate report split context does not match")
     current_fingerprint = _sha256_hex(report.get("current_fingerprint"), "selection current Skill fingerprint")
     candidate_fingerprint = _sha256_hex(report.get("candidate_fingerprint"), "selection candidate Skill fingerprint")
+    _reject_same_fingerprint(
+        {"sha256": current_fingerprint}, {"sha256": candidate_fingerprint}, "selection gate"
+    )
     if staged_fingerprint is not None and candidate_fingerprint != staged_fingerprint:
         raise ValueError("selection gate report candidate fingerprint does not match staged Skill")
     if staged_fingerprint is not None:
@@ -743,7 +935,8 @@ def _validate_selection_report(report, manifest, manifest_hash, staged_fingerpri
     for field in ("current_score", "candidate_score", "delta", "min_delta"):
         actual = report.get(field)
         expected_value = expected_gate[field]
-        if isinstance(actual, bool) or not isinstance(actual, (int, float)) or not math.isclose(float(actual), float(expected_value), rel_tol=0.0, abs_tol=1e-12):
+        actual = _coerce_finite_score(actual, f"selection gate report {field}")
+        if not math.isclose(actual, float(expected_value), rel_tol=0.0, abs_tol=1e-12):
             raise ValueError(f"selection gate report {field} does not match result artifacts")
     return current_fingerprint
 
@@ -758,9 +951,10 @@ def _validate_holdout_report(
 ):
     if not isinstance(report, dict) or report.get("schema_version") != 1 or report.get("purpose") != "release_evidence_only":
         raise ValueError("holdout report schema or purpose is invalid")
+    _require_trusted_evaluator(manifest, "holdout evidence", manifest_path)
     if report.get("manifest_sha256") != manifest_hash or report.get("evaluator") != manifest["evaluator"]:
         raise ValueError("holdout evidence manifest or evaluator does not match")
-    if manifest_path is not None and report.get("manifest") != str(Path(manifest_path).resolve()):
+    if manifest_path is not None and report.get("manifest") != str(_as_path(manifest_path, "manifest").resolve()):
         raise ValueError("holdout evidence manifest path does not match")
     if report.get("split_context") != _manifest_split_context(manifest):
         raise ValueError("holdout evidence split context does not match")
@@ -787,7 +981,7 @@ def _validate_holdout_report(
 
 
 def _write_json_once(path, value):
-    path = Path(path)
+    path = _as_path(path, "holdout report path")
     _reject_symlink_components(path, "holdout report path")
     if path.is_symlink():
         raise ValueError(f"holdout report path must not be a symlink: {path}")
@@ -808,6 +1002,7 @@ def _write_json_once(path, value):
 def record_holdout(manifest_path, candidate_skill, result_path, state_dir, run_dir=None, dry_run=False):
     """Record one held-out release evaluation without influencing candidate choice."""
     manifest = load_manifest(manifest_path)
+    _require_trusted_evaluator(manifest, "holdout", manifest_path)
     manifest_hash = file_sha256(manifest_path)
     candidate_fingerprint = skill_tree_fingerprint(candidate_skill)
     result_data, results = load_results(
@@ -817,7 +1012,7 @@ def record_holdout(manifest_path, candidate_skill, result_path, state_dir, run_d
         manifest_sha256=manifest_hash,
     )
     _assert_result_provenance(result_data, candidate_fingerprint, manifest["evaluator"], "holdout results")
-    raw_state_dir = Path(state_dir)
+    raw_state_dir = _as_path(state_dir, "state_dir")
     _reject_symlink_components(raw_state_dir, "state_dir")
     if raw_state_dir.is_symlink():
         raise ValueError("state_dir must not be a symlink")
@@ -827,7 +1022,21 @@ def record_holdout(manifest_path, candidate_skill, result_path, state_dir, run_d
         raise ValueError("state_dir/runs must not be a symlink")
     if run_dir is None:
         matching_runs = []
-        for report_path in (state_dir / "runs").glob("*/gate_report.json") if (state_dir / "runs").exists() else []:
+        # Discovery is deliberately limited to real, direct run directories.
+        # Do not follow a symlinked run or report while selecting evidence.
+        if runs_dir.exists() and not runs_dir.is_dir():
+            raise ValueError("state_dir/runs must be a directory")
+        report_candidates = []
+        if runs_dir.exists():
+            for run_entry in runs_dir.iterdir():
+                if run_entry.is_symlink() or not run_entry.is_dir():
+                    raise ValueError("state_dir/runs contains a symlink or non-directory entry")
+                report_entry = run_entry / "gate_report.json"
+                if report_entry.is_symlink():
+                    raise ValueError("state_dir/runs contains a symlinked gate report")
+                if report_entry.is_file():
+                    report_candidates.append(report_entry)
+        for report_path in report_candidates:
             try:
                 report = json.loads(report_path.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
@@ -838,7 +1047,7 @@ def record_holdout(manifest_path, candidate_skill, result_path, state_dir, run_d
             raise ValueError("holdout requires exactly one matching accepted staged run; pass --run-dir to disambiguate")
         run_dir = matching_runs[0]
     else:
-        raw_run_dir = Path(run_dir)
+        raw_run_dir = _as_path(run_dir, "run_dir")
         _reject_symlink_components(raw_run_dir, "run_dir")
         if raw_run_dir.is_symlink():
             raise ValueError("run_dir must not be a symlink")
@@ -848,7 +1057,7 @@ def record_holdout(manifest_path, candidate_skill, result_path, state_dir, run_d
     expected_candidate_dir = (run_dir / "candidate").resolve()
     if (run_dir / "candidate").is_symlink():
         raise ValueError("accepted staged candidate must not be a symlink")
-    if Path(candidate_skill).resolve() != expected_candidate_dir:
+    if _as_path(candidate_skill, "candidate Skill").resolve() != expected_candidate_dir:
         raise ValueError("holdout candidate must be the accepted run's staged candidate")
     gate_report_path = run_dir / "gate_report.json"
     if gate_report_path.is_symlink():
@@ -862,13 +1071,13 @@ def record_holdout(manifest_path, candidate_skill, result_path, state_dir, run_d
     _validate_selection_report(
         gate_report, manifest, manifest_hash, candidate_fingerprint["sha256"], manifest_path
     )
-    if Path(gate_report["staged_candidate"]).resolve() != expected_candidate_dir:
+    if _as_path(gate_report["staged_candidate"], "staged candidate").resolve() != expected_candidate_dir:
         raise ValueError("selection report staged_candidate does not match the accepted run")
     output_path = run_dir / "holdout_report.json"
     report = {
         "schema_version": 1,
         "purpose": "release_evidence_only",
-        "manifest": str(Path(manifest_path).resolve()),
+        "manifest": str(_as_path(manifest_path, "manifest").resolve()),
         "manifest_sha256": manifest_hash,
         "candidate_fingerprint": candidate_fingerprint["sha256"],
         "evaluator": manifest["evaluator"],
@@ -893,17 +1102,17 @@ def record_holdout(manifest_path, candidate_skill, result_path, state_dir, run_d
 
 def adopt_staged_candidate(state_dir, run_dir, target_skill, backup_dir=None, dry_run=False):
     """Explicitly promote one release-evidenced snapshot, keeping a backup."""
-    raw_state_dir = Path(state_dir)
+    raw_state_dir = _as_path(state_dir, "state_dir")
     _reject_symlink_components(raw_state_dir, "state_dir")
     if raw_state_dir.is_symlink():
         raise ValueError("state_dir must not be a symlink")
     state_dir = raw_state_dir.resolve()
-    raw_run_dir = Path(run_dir)
+    raw_run_dir = _as_path(run_dir, "run_dir")
     _reject_symlink_components(raw_run_dir, "run_dir")
     if raw_run_dir.is_symlink():
         raise ValueError("run_dir must not be a symlink")
     run_dir = raw_run_dir.resolve()
-    raw_target_skill = Path(target_skill)
+    raw_target_skill = _as_path(target_skill, "target_skill")
     _reject_symlink_components(raw_target_skill, "target_skill")
     if raw_target_skill.is_symlink():
         raise ValueError("target_skill must be an existing real Skill directory")
@@ -926,15 +1135,16 @@ def adopt_staged_candidate(state_dir, run_dir, target_skill, backup_dir=None, dr
     manifest_value = gate_report.get("manifest")
     if not isinstance(manifest_value, str) or not manifest_value.strip():
         raise ValueError("accepted run is missing its evaluation manifest")
-    manifest_path = Path(manifest_value).resolve()
+    manifest_path = _as_path(manifest_value, "manifest").resolve()
     if not manifest_path.is_file():
         raise ValueError("accepted run is missing its evaluation manifest")
     manifest = load_manifest(manifest_path)
+    _require_trusted_evaluator(manifest, "adopt", manifest_path)
     manifest_hash = file_sha256(manifest_path)
     expected_current_fingerprint = _validate_selection_report(
         gate_report, manifest, manifest_hash, staged_fingerprint, manifest_path
     )
-    if Path(gate_report["staged_candidate"]).resolve() != candidate_dir.resolve():
+    if _as_path(gate_report["staged_candidate"], "staged candidate").resolve() != candidate_dir.resolve():
         raise ValueError("selection report staged_candidate does not match the accepted run")
     _validate_holdout_report(
         holdout_report,
@@ -947,14 +1157,14 @@ def adopt_staged_candidate(state_dir, run_dir, target_skill, backup_dir=None, dr
     if target_skill.is_symlink() or not target_skill.is_dir() or not (target_skill / "SKILL.md").is_file():
         raise ValueError("target_skill must be an existing real Skill directory")
     recorded_target = gate_report.get("current_skill")
-    if not isinstance(recorded_target, str) or target_skill != Path(recorded_target).resolve():
+    if not isinstance(recorded_target, str) or target_skill != _as_path(recorded_target, "recorded target Skill").resolve():
         raise ValueError("target_skill must be the active Skill evaluated by the accepted run")
     if skill_tree_fingerprint(target_skill)["sha256"] != expected_current_fingerprint:
         raise ValueError("target Skill changed after the accepted baseline evaluation")
     if backup_dir is None:
         timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
         backup_dir = state_dir / "backups" / timestamp
-    raw_backup_dir = Path(backup_dir)
+    raw_backup_dir = _as_path(backup_dir, "backup_dir")
     _reject_symlink_components(raw_backup_dir, "backup_dir")
     if raw_backup_dir.is_symlink():
         raise ValueError("backup_dir must not be a symlink")
@@ -1045,6 +1255,8 @@ def main(argv=None):
         )
         current_fingerprint = skill_tree_fingerprint(args.current_skill)
         candidate_fingerprint = skill_tree_fingerprint(args.candidate_skill)
+        _require_trusted_evaluator(manifest, "selection gate", args.manifest)
+        _reject_same_fingerprint(current_fingerprint, candidate_fingerprint, "selection gate")
         _assert_result_provenance(current_data, current_fingerprint, manifest["evaluator"], "current results")
         _assert_result_provenance(candidate_data, candidate_fingerprint, manifest["evaluator"], "candidate results")
         validator = _load_validator()

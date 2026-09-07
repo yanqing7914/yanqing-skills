@@ -101,6 +101,18 @@ def add_engineering_contract(skill: Path) -> None:
     tests_dir = skill / "tests"
     tests_dir.mkdir()
     shutil.copy2(ROOT / "tests" / "skill_contract.json", tests_dir / "skill_contract.json")
+    # The engineering validator executes a discoverable test command.  Keep a
+    # tiny deterministic test in each gate fixture rather than weakening the
+    # publish requirement just for synthetic Skills.
+    (tests_dir / "test_fixture.py").write_text(
+        "import unittest\n\n"
+        "class FixtureSmokeTest(unittest.TestCase):\n"
+        "    def test_fixture(self):\n"
+        "        self.assertTrue(True)\n\n"
+        "if __name__ == '__main__':\n"
+        "    unittest.main()\n",
+        encoding="utf-8",
+    )
 
 
 def make_cases(path: Path, count: int = 12) -> None:
@@ -112,6 +124,18 @@ def make_manifest(tmp_path: Path, splitter):
     source = tmp_path / "cases.jsonl"
     make_cases(source)
     eval_dir = tmp_path / "evals"
+    # Quality-gate fixtures use a reproducible evaluator declaration.  Keep
+    # the evaluator beside the manifest so the gate can verify its immutable
+    # byte hash without relying on an external executable or shell.
+    eval_dir.mkdir()
+    evaluator = eval_dir / "fixture_evaluator.py"
+    evaluator.write_text(
+        "#!/usr/bin/env python3\n"
+        "# Deterministic fixture evaluator; the gate records, but does not run, it.\n"
+        "print('fixture evaluator')\n",
+        encoding="utf-8",
+    )
+    evaluator.chmod(0o755)
     manifest = splitter.create_splits(
         source,
         eval_dir,
@@ -120,6 +144,9 @@ def make_manifest(tmp_path: Path, splitter):
         selection_ratio=0.25,
         evaluator_name="fixture-evaluator",
         evaluator_version="2026-08-19",
+        evaluator_command=[evaluator.name],
+        evaluator_files={evaluator.name: sha256(evaluator)},
+        evaluator_trust="trusted",
     )
     return source, eval_dir, manifest, eval_dir / "manifest.json"
 
@@ -309,6 +336,114 @@ class SkillCreatorTests(unittest.TestCase):
             )
             self.assertFalse((outside_agents / "openai.yaml").exists())
 
+    def test_metadata_generation_rejects_non_file_output_without_traceback(self):
+        generator = load("metadata_non_file_output", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "demo-skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "---\nname: demo-skill\ndescription: A complete demo Skill.\n---\n\n# Demo\n",
+                encoding="utf-8",
+            )
+            (skill / "agents").mkdir()
+            (skill / "agents" / "openai.yaml").mkdir()
+            self.assertIsNone(generator.write_openai_yaml(skill, "demo-skill", []))
+
+    def test_metadata_generation_rejects_non_file_skill_document(self):
+        generator = load("metadata_non_file_skill_document", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "demo-skill"
+            skill.mkdir()
+            (skill / "SKILL.md").mkdir()
+            self.assertIsNone(generator.read_frontmatter_name(skill))
+            self.assertIsNone(generator.write_openai_yaml(skill, "demo-skill", []))
+            self.assertFalse((skill / "agents").exists())
+
+    def test_metadata_generation_rejects_yaml_control_characters(self):
+        generator = load("metadata_control_characters", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "demo-skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "---\nname: demo-skill\ndescription: A complete demo Skill.\n---\n\n# Demo\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(generator.write_openai_yaml(skill, "demo-skill", ["display_name=Unsafe\x00title"]))
+            self.assertFalse((skill / "agents").exists())
+
+    def test_metadata_generation_rejects_unicode_controls_and_surrogates(self):
+        generator = load("metadata_unicode_controls", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "demo-skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "---\nname: demo-skill\ndescription: A complete demo Skill.\n---\n\n# Demo\n",
+                encoding="utf-8",
+            )
+            for unsafe in ("C1\x85control", "C1\x9fcontrol", "lone\udcffsurrogate"):
+                with self.subTest(unsafe=repr(unsafe)):
+                    self.assertIsNone(
+                        generator.write_openai_yaml(skill, "demo-skill", [f"display_name={unsafe}"])
+                    )
+            self.assertFalse((skill / "agents").exists())
+
+    def test_frontmatter_reader_handles_invalid_utf8_without_traceback(self):
+        generator = load("metadata_invalid_utf8", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "demo-skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_bytes(b"---\nname: demo-skill\n\xff\n---\n")
+            self.assertIsNone(generator.read_frontmatter_name(skill))
+
+    def test_metadata_generation_escapes_yaml_line_controls(self):
+        generator = load("metadata_line_controls", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "demo-skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "---\nname: demo-skill\ndescription: A complete demo Skill.\n---\n\n# Demo\n",
+                encoding="utf-8",
+            )
+            result = generator.write_openai_yaml(
+                skill,
+                "demo-skill",
+                ["display_name=Line\nBreak\tTab"],
+            )
+            self.assertTrue(result)
+            metadata = result.read_text(encoding="utf-8")
+            self.assertIn('display_name: "Line\\nBreak\\tTab"', metadata)
+            self.assertNotIn("display_name: \"Line\nBreak", metadata)
+
+    def test_metadata_generation_rejects_symlinked_skill_document(self):
+        generator = load("metadata_skill_document_symlink", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = root / "demo-skill"
+            skill.mkdir()
+            outside = root / "outside.md"
+            outside.write_text(
+                "---\nname: outside-skill\ndescription: External document\n---\n\n# Demo\n",
+                encoding="utf-8",
+            )
+            (skill / "SKILL.md").symlink_to(outside)
+            self.assertIsNone(generator.read_frontmatter_name(skill))
+            self.assertIsNone(generator.write_openai_yaml(skill, "outside-skill", []))
+            self.assertFalse((skill / "agents").exists())
+
+    def test_frontmatter_reader_rejects_symlinked_skill_directory(self):
+        generator = load("metadata_skill_directory_symlink", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            real_skill = root / "real-skill"
+            real_skill.mkdir()
+            (real_skill / "SKILL.md").write_text(
+                "---\nname: real-skill\ndescription: A complete demo Skill.\n---\n\n# Demo\n",
+                encoding="utf-8",
+            )
+            linked_skill = root / "linked-skill"
+            linked_skill.symlink_to(real_skill, target_is_directory=True)
+            self.assertIsNone(generator.read_frontmatter_name(linked_skill))
+
     def test_metadata_generation_updates_only_top_level_interface(self):
         generator = load("metadata_interface_boundary", SCRIPTS / "generate_openai_yaml.py")
         with tempfile.TemporaryDirectory() as tmp:
@@ -380,6 +515,58 @@ class SkillCreatorTests(unittest.TestCase):
                     sys.modules.pop("yaml", None)
                 else:
                     sys.modules["yaml"] = previous_yaml
+
+    def test_metadata_generation_fallback_rejects_invalid_names_and_collections(self):
+        generator = load("metadata_name_validation", SCRIPTS / "generate_openai_yaml.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            invalid_frontmatter = (
+                "---\nname: true\ndescription: A complete demo Skill.\n---\n\n# Demo\n"
+            )
+            skill = root / "demo-skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(invalid_frontmatter, encoding="utf-8")
+            missing_yaml = object()
+            previous_yaml = sys.modules.get("yaml", missing_yaml)
+            try:
+                sys.modules["yaml"] = None
+                self.assertIsNone(generator.read_frontmatter_name(skill))
+                (skill / "SKILL.md").write_text(
+                    "---\nname: [demo\ndescription: A complete demo Skill.\n---\n\n# Demo\n",
+                    encoding="utf-8",
+                )
+                self.assertIsNone(generator.read_frontmatter_name(skill))
+            finally:
+                if previous_yaml is missing_yaml:
+                    sys.modules.pop("yaml", None)
+                else:
+                    sys.modules["yaml"] = previous_yaml
+
+            # Explicit CLI/API name overrides use the same safe name grammar
+            # and must fail before creating an agents directory.
+            for invalid_name in ("Bad Name", "../escape", "a" * 65):
+                self.assertIsNone(generator.write_openai_yaml(skill, invalid_name, []))
+            self.assertFalse((skill / "agents").exists())
+
+    def test_metadata_generation_fallback_preserves_plain_scalar_brackets(self):
+        generator = load("metadata_plain_scalar_brackets", SCRIPTS / "generate_openai_yaml.py")
+        previous_yaml = sys.modules.get("yaml")
+        try:
+            sys.modules["yaml"] = None
+            parsed = generator._parse_simple_frontmatter(
+                "name: demo-skill\n"
+                "description: Use [foo] and {bar} in URLs: https://example.test/a[b\n"
+            )
+            self.assertEqual(parsed["name"], "demo-skill")
+            self.assertEqual(
+                parsed["description"],
+                "Use [foo] and {bar} in URLs: https://example.test/a[b",
+            )
+        finally:
+            if previous_yaml is None:
+                sys.modules.pop("yaml", None)
+            else:
+                sys.modules["yaml"] = previous_yaml
 
     def test_fallback_metadata_supports_documented_extra_sections(self):
         validator = load("fallback_extended_metadata_validator", SCRIPTS / "quick_validate.py")
@@ -886,9 +1073,7 @@ class SkillCreatorTests(unittest.TestCase):
         current = make_skill(tmp_path, "current-skill", "current")
         candidate = make_skill(tmp_path, "candidate-skill", "candidate")
         for skill in (current, candidate):
-            tests_dir = skill / "tests"
-            tests_dir.mkdir()
-            shutil.copy2(ROOT / "tests" / "skill_contract.json", tests_dir / "skill_contract.json")
+            add_engineering_contract(skill)
         # The selection gate deliberately requires source Git provenance for
         # both sides; commit the complete fixture tree in its temp repository.
         initialize_clean_git_repo(tmp_path)
@@ -1043,6 +1228,56 @@ class SkillCreatorTests(unittest.TestCase):
             ])
             self.assertEqual(code, 2)
             self.assertIn("IDs do not match", stderr)
+
+    def test_gate_rejects_huge_integer_score_without_traceback(self):
+        """JSON integers outside the float range must fail at the CLI boundary."""
+        with tempfile.TemporaryDirectory() as tmp:
+            gate, manifest, manifest_path, eval_dir, current, candidate, current_results, candidate_results = self._gate_fixture(tmp)
+            data = json.loads(candidate_results.read_text(encoding="utf-8"))
+            # Write the oversized integer as raw JSON to bypass Python's own
+            # integer-string safety limit while exercising the gate parser.
+            data["results"][0]["score"] = 1
+            payload = json.dumps(data, ensure_ascii=False, indent=2)
+            payload = payload.replace('"score": 1', '"score": ' + ("9" * 5000), 1)
+            candidate_results.write_text(payload + "\n", encoding="utf-8")
+            code, _, stderr = run_gate(gate, [
+                "--manifest", str(manifest_path), "--current-results", str(current_results),
+                "--candidate-results", str(candidate_results), "--current-skill", str(current),
+                "--candidate-skill", str(candidate), "--state-dir", str(Path(tmp) / "state"),
+            ])
+            self.assertEqual(code, 2)
+            self.assertIn("non-finite", stderr.lower())
+            self.assertNotIn("traceback", stderr.lower())
+
+    def test_holdout_auto_discovery_rejects_symlinked_run_entry(self):
+        """Implicit run discovery must not traverse a symlink under runs/."""
+        with tempfile.TemporaryDirectory() as tmp:
+            gate, manifest, manifest_path, eval_dir, current, candidate, current_results, candidate_results = self._gate_fixture(tmp)
+            state_dir = Path(tmp) / "state"
+            code, stdout, stderr = run_gate(gate, [
+                "--manifest", str(manifest_path), "--current-results", str(current_results),
+                "--candidate-results", str(candidate_results), "--current-skill", str(current),
+                "--candidate-skill", str(candidate), "--state-dir", str(state_dir), "--json",
+            ])
+            self.assertEqual(code, 0, stderr or stdout)
+            gate_report = json.loads(stdout)
+            staged = Path(gate_report["staged_candidate"])
+            holdout_results = eval_dir / "candidate-holdout.json"
+            result_artifact(
+                holdout_results, manifest_path, manifest,
+                gate.skill_tree_fingerprint(staged)["sha256"], "holdout",
+                {case_id: 1.0 for case_id in manifest["splits"]["holdout"]},
+            )
+            outside = Path(tmp) / "outside-run"
+            outside.mkdir()
+            (state_dir / "runs" / "linked-run").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlink"):
+                gate.record_holdout(
+                    manifest_path=manifest_path,
+                    candidate_skill=staged,
+                    result_path=holdout_results,
+                    state_dir=state_dir,
+                )
 
     def test_gate_rejects_manifest_evaluator_fingerprint_and_missing_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1389,6 +1624,115 @@ class SkillCreatorTests(unittest.TestCase):
             self.assertTrue(backup.is_dir())
             self.assertEqual(gate.skill_tree_fingerprint(backup), active_before)
             self.assertEqual(gate.skill_tree_fingerprint(current), gate.skill_tree_fingerprint(staged))
+
+    def test_splitter_public_api_rejects_malformed_types(self):
+        splitter = load("split_skill_cases_type_boundary", SCRIPTS / "split_skill_cases.py")
+        cases = [{"id": f"case-{index}"} for index in range(5)]
+        with self.assertRaisesRegex(ValueError, "cases must be"):
+            splitter.split_cases(None, 1, 0.6, 0.2)
+        with self.assertRaisesRegex(ValueError, "seed must be an integer"):
+            splitter.split_cases(cases, True, 0.6, 0.2)
+        with self.assertRaisesRegex(ValueError, "train_ratio must be a finite number"):
+            splitter.split_cases(cases, 1, float("nan"), 0.2)
+        with self.assertRaisesRegex(ValueError, "selection_ratio must be a finite number"):
+            splitter.split_cases(cases, 1, 0.6, "0.2")
+
+    def test_splitter_is_idempotent_and_refuses_mismatched_existing_outputs(self):
+        splitter = load("split_skill_cases_idempotence", SCRIPTS / "split_skill_cases.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "cases.jsonl"
+            make_cases(source)
+            output = root / "evals"
+            first = splitter.create_splits(source, output, evaluator_name="fixture-evaluator")
+            before = {path.name: path.read_bytes() for path in output.iterdir()}
+            second = splitter.create_splits(source, output, evaluator_name="fixture-evaluator")
+            self.assertEqual(first, second)
+            self.assertEqual(before, {path.name: path.read_bytes() for path in output.iterdir()})
+            (output / "selection.jsonl").write_text("tampered\n", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "different content"):
+                splitter.create_splits(source, output, evaluator_name="fixture-evaluator")
+
+    def test_manifest_rejects_relative_source_escape(self):
+        splitter = load("split_skill_cases_source_boundary", SCRIPTS / "split_skill_cases.py")
+        gate = load("skill_gate_source_boundary", SCRIPTS / "skill_gate.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _, eval_dir, _, manifest_path = make_manifest(root, splitter)
+            outside = root / "outside.jsonl"
+            make_cases(outside)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["source"] = "../outside.jsonl"
+            manifest["source_sha256"] = sha256(outside)
+            write_json(manifest_path, manifest)
+            with self.assertRaisesRegex(ValueError, "stay inside the manifest directory"):
+                gate.load_manifest(manifest_path)
+
+    def test_gate_rejects_default_manual_evaluator(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gate, manifest, manifest_path, eval_dir, current, candidate, current_results, candidate_results = self._gate_fixture(tmp)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["evaluator"] = {"name": "manual", "version": "1"}
+            manifest["evaluator_trust"] = "untrusted"
+            write_json(manifest_path, manifest)
+            result_artifact(
+                current_results, manifest_path, manifest, gate.skill_tree_fingerprint(current)["sha256"],
+                "selection", {case_id: 0.0 for case_id in manifest["splits"]["selection"]},
+            )
+            result_artifact(
+                candidate_results, manifest_path, manifest, gate.skill_tree_fingerprint(candidate)["sha256"],
+                "selection", {case_id: 1.0 for case_id in manifest["splits"]["selection"]},
+            )
+            code, _, stderr = run_gate(gate, [
+                "--manifest", str(manifest_path), "--current-results", str(current_results),
+                "--candidate-results", str(candidate_results), "--current-skill", str(current),
+                "--candidate-skill", str(candidate), "--state-dir", str(Path(tmp) / "state"),
+            ])
+            self.assertEqual(code, 2)
+            self.assertIn("manual/untrusted evaluator", stderr.lower())
+
+    def test_gate_rejects_manual_evaluator_even_when_marked_trusted(self):
+        """Hashed review materials cannot turn a manual score into a trusted gate."""
+        with tempfile.TemporaryDirectory() as tmp:
+            gate, manifest, manifest_path, eval_dir, current, candidate, current_results, candidate_results = self._gate_fixture(tmp)
+            review_protocol = eval_dir / "manual-review.md"
+            review_protocol.write_text("Human review protocol.\n", encoding="utf-8")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["evaluator"] = {"name": "manual", "version": "1"}
+            manifest["evaluator_trust"] = "trusted"
+            manifest["evaluator_files"] = {"manual-review.md": sha256(review_protocol)}
+            write_json(manifest_path, manifest)
+            result_artifact(
+                current_results, manifest_path, manifest, gate.skill_tree_fingerprint(current)["sha256"],
+                "selection", {case_id: 0.0 for case_id in manifest["splits"]["selection"]},
+            )
+            result_artifact(
+                candidate_results, manifest_path, manifest, gate.skill_tree_fingerprint(candidate)["sha256"],
+                "selection", {case_id: 1.0 for case_id in manifest["splits"]["selection"]},
+            )
+            code, _, stderr = run_gate(gate, [
+                "--manifest", str(manifest_path), "--current-results", str(current_results),
+                "--candidate-results", str(candidate_results), "--current-skill", str(current),
+                "--candidate-skill", str(candidate), "--state-dir", str(Path(tmp) / "state"),
+            ])
+            self.assertEqual(code, 2)
+            self.assertIn("manual/untrusted evaluator", stderr.lower())
+
+    def test_gate_rejects_identical_current_and_candidate_fingerprints(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            gate, manifest, manifest_path, eval_dir, current, candidate, current_results, candidate_results = self._gate_fixture(tmp)
+            current_fp = gate.skill_tree_fingerprint(current)["sha256"]
+            result_artifact(
+                candidate_results, manifest_path, manifest, current_fp, "selection",
+                {case_id: 1.0 for case_id in manifest["splits"]["selection"]},
+            )
+            code, _, stderr = run_gate(gate, [
+                "--manifest", str(manifest_path), "--current-results", str(current_results),
+                "--candidate-results", str(candidate_results), "--current-skill", str(current),
+                "--candidate-skill", str(current), "--state-dir", str(Path(tmp) / "state"),
+            ])
+            self.assertEqual(code, 2)
+            self.assertIn("fingerprints are identical", stderr.lower())
 
 
 if __name__ == "__main__":
