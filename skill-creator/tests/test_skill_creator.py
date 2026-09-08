@@ -218,6 +218,36 @@ class SkillCreatorTests(unittest.TestCase):
             valid, message = validator.validate_skill(skill)
             self.assertTrue(valid, message)
 
+    def test_automation_audit_requires_evidence_and_can_reach_ready(self):
+        auditor = load("automation_audit", SCRIPTS / "audit_skill_automation.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = make_skill(root, "automation-skill", "ready")
+            add_engineering_contract(skill)
+            initialize_clean_git_repo(root)
+            report = auditor.audit_skill(skill, run_tests=True)
+            self.assertEqual(report["verdict"], "ready")
+            self.assertTrue(all(item["status"] == "pass" for item in report["checks"]))
+
+    def test_automation_audit_marks_missing_contract_and_failure_behavior(self):
+        auditor = load("automation_audit_partial", SCRIPTS / "audit_skill_automation.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = make_skill(root, "automation-skill", "partial")
+            (skill / "tests").mkdir()
+            (skill / "tests" / "test_smoke.py").write_text(
+                "import unittest\n\nclass Smoke(unittest.TestCase):\n"
+                "    def test_failure(self):\n        self.fail('expected audit failure')\n",
+                encoding="utf-8",
+            )
+            initialize_clean_git_repo(root)
+            report = auditor.audit_skill(skill, run_tests=True)
+            self.assertIn(report["verdict"], {"partial", "not-ready"})
+            by_id = {item["id"]: item for item in report["checks"]}
+            self.assertEqual(by_id["contract"]["status"], "fail")
+            self.assertEqual(by_id["failure-handling"]["status"], "fail")
+            self.assertEqual(by_id["test-execution"]["status"], "fail")
+
     def test_fallback_frontmatter_accepts_documented_collections(self):
         validator = load("fallback_frontmatter_collections", SCRIPTS / "quick_validate.py")
         with tempfile.TemporaryDirectory() as tmp:

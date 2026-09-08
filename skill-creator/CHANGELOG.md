@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0] - 2026-09-07
+
+### Added
+
+- New read-only automation readiness audit: `scripts/audit_skill_automation.py`, with `ready` / `partial` / `not-ready` verdicts across deterministic entrypoints, contract, tests, failure handling, and Git provenance.
+- `--run-tests` option to explicitly execute the Skill's declared or standard-library test command during the audit.
+- SKILL.md section documenting when and how to audit another Skill's automation readiness.
+- Regression tests covering both the `ready` and `partial`/`not-ready` audit paths.
+
 ## [0.2.0] - 2026-08-25
 
 ### Changed

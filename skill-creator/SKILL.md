@@ -238,7 +238,26 @@ authoritative evidence; do not count an accepted request as a completed result.
 - Deterministic split: `scripts/split_skill_cases.py`
 - Selection/holdout/adopt lifecycle: `scripts/skill_gate.py`
 - Contract and regression tests: `tests/test_skill_creator.py`, `tests/skill_contract.json`, `tests/routing_cases.md`
+- Automation readiness audit (read-only by default): `scripts/audit_skill_automation.py`
 
 When handing off, report modified files, validation commands and results,
 SKILL.md line count, whether an eval corpus is active, whether independent
 selection/holdout evidence exists, Git provenance status, and remaining risks.
+
+## Audit another Skill's automation readiness
+
+Use the audit when someone asks whether an existing Skill can be automated or
+whether it is safe to put into a repeatable workflow. It checks separate
+evidence dimensions rather than treating a `scripts/` directory as proof:
+
+```bash
+python3 scripts/audit_skill_automation.py <skill-dir> --json
+python3 scripts/audit_skill_automation.py <skill-dir> --run-tests --json
+```
+
+The report distinguishes `ready`, `partial`, and `not-ready`. It checks for
+deterministic entrypoints, a valid contract, discoverable tests, bounded test
+execution, explicit failure and idempotence behavior, and clean Git
+provenance. The first command is read-only; `--run-tests` explicitly executes
+the Skill's declared or standard-library test command. A partial result is an
+audit finding, not permission to automate production work.
