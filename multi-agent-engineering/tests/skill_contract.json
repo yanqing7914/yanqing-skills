@@ -1,0 +1,200 @@
+{
+  "schema_version": 1,
+  "skill": "multi-agent-engineering",
+  "source_of_truth": [
+    "SKILL.md",
+    "rules/complexity-assessment.md",
+    "rules/delegation-rules.md",
+    "templates/subagent-task.md"
+  ],
+  "verification": {
+    "test_command": ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"]
+  },
+  "sections": {
+    "routing": [
+      {
+        "id": "complex-refactor-subagents",
+        "kind": "positive",
+        "prompt": "Use multiple subagents to refactor the payment module while keeping the public API stable.",
+        "expected_action": "Trigger multi-agent-engineering. Main Session clarifies constraints, classifies complexity, delegates Explorer then Implementer, reviews, verifies, and delivers.",
+        "evidence": [
+          "SKILL.md frontmatter description",
+          "SKILL.md: Core Loop",
+          "workflows/refactor.md"
+        ]
+      },
+      {
+        "id": "plan-then-delegate-roles",
+        "kind": "positive",
+        "prompt": "Act as the lead agent: plan first, then delegate an explorer, implementer, and reviewer for this feature.",
+        "expected_action": "Trigger multi-agent-engineering. Main Session owns planning and uses templates/subagent-task.md for each role.",
+        "evidence": [
+          "SKILL.md: How To Spawn Subagents",
+          "templates/subagent-task.md",
+          "orchestration/delegation.md"
+        ]
+      },
+      {
+        "id": "unknown-root-cause-investigation",
+        "kind": "positive",
+        "prompt": "Checkout hangs sometimes. Investigate with subagents and integrate the findings before any patch.",
+        "expected_action": "Trigger multi-agent-engineering investigation workflow. Do not spawn Verifier for hypotheses. Main Session integrates the diagnosis.",
+        "evidence": [
+          "workflows/investigation.md",
+          "SKILL.md: Core Loop"
+        ]
+      },
+      {
+        "id": "parallel-workers-request",
+        "kind": "nonstandard_positive",
+        "prompt": "Spin up parallel workers to migrate this service and have someone review the risk.",
+        "expected_action": "Treat workers as Implementers. Trigger multi-agent-engineering, split non-overlapping paths, and keep Reviewer read-only.",
+        "evidence": [
+          "SKILL.md frontmatter description",
+          "SKILL.md: How To Spawn Subagents",
+          "workflows/migration.md"
+        ]
+      },
+      {
+        "id": "security-review-lead",
+        "kind": "nonstandard_positive",
+        "prompt": "I only want to talk to one lead. Have specialists review auth for security issues.",
+        "expected_action": "Trigger multi-agent-engineering. Main Session remains the user-facing owner and uses the security-review workflow.",
+        "evidence": [
+          "SKILL.md: You are the Main Session",
+          "workflows/security-review.md"
+        ]
+      },
+      {
+        "id": "ordinary-function-no-agents",
+        "kind": "negative",
+        "prompt": "Write a helper that title-cases a string. Do not use extra agents.",
+        "expected_action": "Do not trigger multi-agent-engineering. Handle as ordinary single-session coding.",
+        "evidence": [
+          "SKILL.md frontmatter exclusion: ordinary single-session coding"
+        ]
+      },
+      {
+        "id": "explain-multi-agent-only",
+        "kind": "negative",
+        "prompt": "Just explain what multi-agent means. Do not actually open subagents.",
+        "expected_action": "Do not treat this as an orchestration job. Answer conceptually without spawning roles.",
+        "evidence": [
+          "SKILL.md frontmatter exclusion: explanation of multi-agent concepts"
+        ]
+      },
+      {
+        "id": "skill-creator-engineering-request",
+        "kind": "adjacent",
+        "prompt": "Engineer this Skill to the skill-creator standard and add contract tests.",
+        "expected_action": "Route to skill-creator, not multi-agent-engineering.",
+        "evidence": [
+          "SKILL.md frontmatter exclusion: create, audit, or engineer a Skill"
+        ]
+      },
+      {
+        "id": "plain-bugfix-single-session",
+        "kind": "adjacent",
+        "prompt": "Fix the failing unit test in tests/test_foo.py.",
+        "expected_action": "Do not trigger multi-agent-engineering unless the user also asks for subagents or multi-agent coordination.",
+        "evidence": [
+          "SKILL.md frontmatter exclusion: ordinary single-session coding, bugfixes, or tests"
+        ]
+      }
+    ],
+    "behavior": [
+      {
+        "id": "success-delegate-and-deliver",
+        "kind": "success",
+        "scenario": "A complex requested change has a confirmed goal, scoped task cards, and Main Session verification.",
+        "assertions": [
+          "Main Session is the only user-facing owner",
+          "Each spawned role receives templates/subagent-task.md plus Forbidden/Output",
+          "Delivery names files changed, checks run, and remaining risk",
+          "Spawning a subagent is not treated as completion"
+        ],
+        "evidence": [
+          "SKILL.md: Completion",
+          "templates/final-delivery.md",
+          "templates/result-report.md"
+        ]
+      },
+      {
+        "id": "invalid-overlapping-implementers",
+        "kind": "invalid_input",
+        "scenario": "A plan would give two Implementers overlapping allowed_paths, or a task card omits objective/scope.",
+        "assertions": [
+          "Do not spawn overlapping Implementers",
+          "Do not delegate unclear work",
+          "Return to Main Session and repair the plan or ask the user"
+        ],
+        "evidence": [
+          "SKILL.md: How To Spawn Subagents",
+          "rules/delegation-rules.md",
+          "orchestration/planning.md"
+        ]
+      },
+      {
+        "id": "missing-native-subagents",
+        "kind": "tool_or_permission_failure",
+        "scenario": "The client has no native subagent or Task tool, or a named test command cannot run.",
+        "assertions": [
+          "Do not claim parallel execution",
+          "Run roles sequentially in the Main Session and say so",
+          "Report the failed check instead of inventing a pass",
+          "Do not spawn a writable Verifier to hide the gap"
+        ],
+        "evidence": [
+          "SKILL.md: How To Spawn Subagents",
+          "references/client_delegation.md",
+          "SKILL.md: Safety"
+        ]
+      },
+      {
+        "id": "repeat-same-orchestration",
+        "kind": "idempotence",
+        "scenario": "The user repeats the same orchestration request after delivery, or check_skill.py is run twice.",
+        "assertions": [
+          "Do not spawn a second overlapping Implementer on already completed scoped work without a new delta",
+          "python3 scripts/check_skill.py <skill-dir> is read-only and exits 0 twice with OK",
+          "Blocked git push and force-push remain blocked on rerun"
+        ],
+        "evidence": [
+          "scripts/check_skill.py",
+          "SKILL.md: Safety",
+          "checklists/safety.md"
+        ]
+      }
+    ],
+    "completion": [
+      {
+        "id": "user-facing-delivery",
+        "artifact": "A Main Session delivery that names the user outcome, files changed or findings, verification performed or why it was not run, and residual risk.",
+        "assertions": [
+          "The user-facing answer is not only an internal roster of subagents",
+          "Verification is attributed to Main Session checks or an explicit skipped reason",
+          "templates/final-delivery.md is used when the work is large"
+        ],
+        "evidence": [
+          "SKILL.md: Completion",
+          "templates/final-delivery.md",
+          "orchestration/delivery.md"
+        ]
+      },
+      {
+        "id": "engineering-gate-without-false-git",
+        "artifact": "Validator output that distinguishes contract success from publish-grade Git provenance.",
+        "assertions": [
+          "python3 .../quick_validate.py <skill-dir> --require-contract can pass without Git tracking",
+          "python3 .../quick_validate.py <skill-dir> --engineering fails with unavailable provenance while the tree is untracked",
+          "No commit hash is invented"
+        ],
+        "evidence": [
+          "references/validation.md",
+          "references/provenance.md",
+          "SKILL.md: Validation commands"
+        ]
+      }
+    ]
+  }
+}

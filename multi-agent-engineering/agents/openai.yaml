@@ -1,0 +1,4 @@
+interface:
+  display_name: "Multi-Agent Engineering"
+  short_description: "Lead-session subagent planning and delivery"
+  default_prompt: "Use $multi-agent-engineering to clarify this work, decide whether subagents are needed, and deliver verified results."

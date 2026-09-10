@@ -7,7 +7,7 @@
 #### 我自己使用和维护的一些 Agent Skills
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-3-10B981?style=for-the-badge)](#-skills)
+[![Skills](https://img.shields.io/badge/Skills-4-10B981?style=for-the-badge)](#-skills)
 [![AgentSkills](https://img.shields.io/badge/AgentSkills-Standard-8B5CF6?style=for-the-badge)](https://agentskills.io)
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-D97706?style=flat-square&logo=anthropic&logoColor=white)
@@ -27,6 +27,7 @@
 | 🛠️ [**skill-creator**](#️-skill-creator) | 创建、审计、标准化、测试和发布 Codex Skill | [`SKILL.md`](./skill-creator/SKILL.md) |
 | 💽 [**storage-analyzer**](#-storage-analyzer) | 分析 Mac / Windows 磁盘占用，生成分级清理报告 | [`SKILL.md`](./storage-analyzer/SKILL.md) |
 | 🩺 [**github-repo-health**](#-github-repo-health) | 审计 GitHub 仓库的结构、CI/CD、发布和安全风险 | [`SKILL.md`](./github-repo-health/SKILL.md) |
+| 🎼 [**multi-agent-engineering**](#-multi-agent-engineering) | 以主会话编排多个子代理完成复杂软件工程 | [`SKILL.md`](./multi-agent-engineering/SKILL.md) |
 
 ---
 
@@ -163,6 +164,39 @@ C 盘满了
 ```
 
 → [SKILL.md](./github-repo-health/SKILL.md)
+
+</td></tr>
+</table>
+
+<table>
+<tr><td>
+
+### 🎼 multi-agent-engineering
+
+> 子代理是专家，不是独立负责人。主会话负责目标、集成和验收。
+
+以 Main Session（主会话）身份编排多个子代理完成复杂软件工程：澄清目标、评估复杂度、委派带边界约束的任务、集成结果并亲自验证后再交付。
+
+**它能做什么**
+
+- 澄清目标，确认范围和成功标准
+- 评估任务复杂度，选择匹配的工作流
+- 按角色委派子代理：Explorer / Implementer / Reviewer 只读或限写
+- 用任务卡模板约束子代理的输入、权限和输出
+- 集成结果并对照用户目标验证后交付
+- 内置 feature、bugfix、debugging、migration、security-review 等 12 种工作流
+- 明确的安全边界：不 push、不 force、不碰生产环境
+
+**怎么触发**
+
+```text
+用多个 agent 并行处理这个重构
+帮我拆分这个迁移任务给子代理
+成立一个 review 团队审查这个 PR
+这个任务很复杂，帮我做编排
+```
+
+→ [SKILL.md](./multi-agent-engineering/SKILL.md)
 
 </td></tr>
 </table>
