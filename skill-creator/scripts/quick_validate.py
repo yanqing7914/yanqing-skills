@@ -33,6 +33,7 @@ EXCLUDED_SUFFIXES = {".pyc", ".pyo"}
 SHELL_EXECUTABLES = {"sh", "bash", "zsh", "fish", "ksh", "dash", "cmd", "powershell", "pwsh"}
 FORBIDDEN_COMMAND_CHARS = set("\x00\r\n;|&<>`$")
 DEFAULT_TEST_PATTERN = "test_*.py"
+ENGINEERING_VERIFY_ENV = "SKILL_CREATOR_ENGINEERING_VERIFY"
 
 
 def _empty_git_report(status, message):
@@ -598,12 +599,17 @@ def _run_verification_tests(skill_path, contract):
     if not os.path.isabs(executable) and shutil.which(executable) is None:
         raise ValueError(f"Engineering verification executable not found: {executable}")
     try:
+        # Mark the child test process so a test cannot recursively launch the
+        # publish gate and create an unbounded validator/test process tree.
+        environment = os.environ.copy()
+        environment[ENGINEERING_VERIFY_ENV] = "1"
         completed = subprocess.run(
             command,
             cwd=skill_path,
             shell=False,
             capture_output=True,
             text=True,
+            env=environment,
             timeout=VERIFICATION_TIMEOUT_SECONDS,
             check=False,
         )
@@ -791,7 +797,7 @@ def validate_skill(skill_path, require_contract=False):
         return False, str(exc) if isinstance(exc, ValueError) else f"Cannot read SKILL.md: {exc}"
     if not isinstance(frontmatter, dict):
         return False, "Frontmatter must be a YAML dictionary"
-    allowed_properties = {"name", "description", "license", "allowed-tools", "metadata"}
+    allowed_properties = {"name", "description", "compatibility", "license", "allowed-tools", "metadata"}
     unexpected_keys = set(frontmatter) - allowed_properties
     if unexpected_keys:
         return False, "Unexpected key(s) in SKILL.md frontmatter: " + ", ".join(sorted(unexpected_keys))
@@ -811,6 +817,9 @@ def validate_skill(skill_path, require_contract=False):
     description = description.strip()
     if "<" in description or ">" in description or len(description) > 1024:
         return False, "Description contains unsupported characters or exceeds 1024 characters"
+    compatibility = frontmatter.get("compatibility")
+    if compatibility is not None and (not isinstance(compatibility, str) or len(compatibility) > 1024):
+        return False, "Frontmatter 'compatibility' must be a string of at most 1024 characters"
     body = content[match.end():]
     if not body.strip():
         return False, "SKILL.md body must not be empty"
@@ -903,6 +912,13 @@ def main(argv=None):
         return 0 if report["status"] == "versioned_clean" else 1
     if args.json:
         parser.error("--json requires --git")
+    if args.engineering and os.environ.get(ENGINEERING_VERIFY_ENV) == "1":
+        print(
+            "Engineering publish gate re-entry blocked: do not invoke --engineering "
+            "from inside the engineering verification test command",
+            file=sys.stderr,
+        )
+        return 2
     valid, message = (
         validate_engineering_contract(args.skill_directory)
         if args.engineering

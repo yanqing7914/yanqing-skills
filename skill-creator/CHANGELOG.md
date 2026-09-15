@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0] - 2026-09-14
+
+### Added
+
+- New real-task eval runner: `scripts/run_eval.py`, keeps real prompts in `evals/evals.json`, captures stdout/stderr/exit status/timing against current and candidate trees, and never infers a quality score from process success.
+- New transparent timing/process aggregator: `scripts/aggregate_benchmark.py`.
+- New reference: `references/anthropic_alignment.md`, mapping the workflow to the upstream Anthropic Skill process and its Codex-specific limits.
+- Routing-description optimization workflow: snapshot the previous tree, compare with-Skill vs baseline on realistic prompts, and treat description changes as hypotheses until routing tests confirm fewer false negatives without unacceptable false positives.
+- Frontmatter `compatibility` field support in the validator.
+- `init_skill.py --evals` now also scaffolds an empty inactive `evals/evals.json` case corpus.
+
+### Changed
+
+- Engineering publish gate now blocks recursive re-entry from a Skill's own test suite via the `SKILL_CREATOR_ENGINEERING_VERIFY` environment marker.
+- Automation audit now reports optional SkillOpt evaluation evidence (manifest presence and evaluator trust) without treating absence as failure.
+
 ## [0.3.0] - 2026-09-07
 
 ### Added

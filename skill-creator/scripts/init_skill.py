@@ -46,6 +46,19 @@ retain the best validated candidate separately. The scaffold is inactive until
 you create a valid `manifest.json`, all three split files, and provenance-bound
 result artifacts. Staged snapshots intentionally omit `.git`; source Git
 provenance is recorded in the selection report instead.
+
+For real task runs, add cases to `evals/evals.json` and use
+`python3 scripts/run_eval.py evals/evals.json --output <run-dir> --current-skill <skill-dir>`.
+Use `python3 scripts/aggregate_benchmark.py <run-dir>/run.json --output <run-dir>/benchmark.json`
+for timing/process summaries. These commands never infer a quality score from
+process success; independent grading evidence is required for quality claims.
+"""
+
+EVAL_CASES = """{
+  \"schema_version\": 1,
+  \"skill_name\": \"__SKILL_NAME__\",
+  \"evals\": []
+}
 """
 
 SKILL_TEMPLATE = """---
@@ -367,7 +380,9 @@ def init_skill(skill_name, path, resources, include_examples, interface_override
         # This is an instruction file, not a claimed evaluation corpus. It keeps
         # initialization honest until stable cases and evaluator provenance exist.
         (evals_dir / "EVALUATION.md").write_text(EVAL_README)
+        (evals_dir / "evals.json").write_text(EVAL_CASES.replace("__SKILL_NAME__", skill_name), encoding="utf-8")
         print("[OK] Created evals/EVALUATION.md")
+        print("[OK] Created evals/evals.json (empty inactive case corpus)")
 
     # Print next steps
     print(f"\n[OK] Skill '{skill_name}' initialized successfully at {skill_dir}")

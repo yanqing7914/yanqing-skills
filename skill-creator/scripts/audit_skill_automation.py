@@ -21,6 +21,11 @@ if str(SCRIPT_DIR) not in sys.path:
 
 import quick_validate  # noqa: E402
 
+try:
+    import skill_gate  # noqa: E402
+except ImportError:  # pragma: no cover - only relevant for unusual embedding
+    skill_gate = None
+
 
 def _check(check_id: str, status: str, message: str, evidence=None) -> dict:
     item = {"id": check_id, "status": status, "message": message}
@@ -58,6 +63,26 @@ def _contract_case(contract: dict, kind: str) -> bool:
     if not isinstance(behavior, list):
         return False
     return any(isinstance(case, dict) and case.get("kind") == kind for case in behavior)
+
+
+def _evaluation_status(skill_path: Path) -> tuple[str, str, object | None]:
+    """Report optional SkillOpt evidence without treating absence as failure."""
+    eval_root = skill_path / "evals"
+    if not eval_root.is_dir() or eval_root.is_symlink():
+        return "not-applicable", "No optional evaluation corpus is enabled", None
+    manifest = eval_root / "manifest.json"
+    if not manifest.is_file() or manifest.is_symlink():
+        return "fail", "evals/ exists but manifest.json is missing", None
+    try:
+        if skill_gate is None:
+            return "fail", "SkillOpt gate module is unavailable", None
+        loaded = skill_gate.load_manifest(manifest)
+        trust = loaded.get("evaluator_trust") if isinstance(loaded, dict) else None
+        if trust != "trusted":
+            return "fail", "Evaluation corpus is present but evaluator trust is not 'trusted'; no quality conclusion is available", loaded
+        return "pass", "Immutable train/selection/holdout manifest is valid", loaded
+    except (OSError, UnicodeError, ValueError, TypeError, AttributeError) as exc:
+        return "fail", f"Evaluation manifest is not usable: {exc}", None
 
 
 def audit_skill(skill_path: Path, run_tests: bool = False) -> dict:
@@ -104,14 +129,23 @@ def audit_skill(skill_path: Path, run_tests: bool = False) -> dict:
     except (OSError, ValueError) as exc:
         checks.append(_check("test-command", "fail", str(exc)))
 
+    git_before_tests = None
     if run_tests and command is not None:
+        git_before_tests = quick_validate.inspect_git_versioning(skill_path)
         try:
             quick_validate._run_verification_tests(skill_path, contract)
-            checks.append(_check("test-execution", "pass", "Declared/default test command passed"))
+            git_after_tests = quick_validate.inspect_git_versioning(skill_path)
+            if git_before_tests.get("status") == "versioned_clean" and git_after_tests.get("status") != "versioned_clean":
+                checks.append(_check("test-execution", "fail", "Tests changed the Skill tree or Git provenance became unavailable", git_after_tests))
+            else:
+                checks.append(_check("test-execution", "pass", "Declared/default test command passed"))
         except ValueError as exc:
             checks.append(_check("test-execution", "fail", str(exc)))
     else:
         checks.append(_check("test-execution", "not-run", "Use --run-tests to execute the bounded test command"))
+
+    eval_status, eval_message, eval_evidence = _evaluation_status(skill_path)
+    checks.append(_check("skillopt-evidence", eval_status, eval_message, eval_evidence))
 
     if isinstance(contract, dict) and _contract_case(contract, "idempotence"):
         checks.append(_check("idempotence", "pass", "Contract declares repeated-run behavior"))
@@ -129,7 +163,8 @@ def audit_skill(skill_path: Path, run_tests: bool = False) -> dict:
     required = {"deterministic-entrypoints", "contract", "automated-tests", "test-command", "idempotence", "failure-handling", "git-provenance"}
     passed = {item["id"] for item in checks if item["status"] == "pass"}
     failed = {item["id"] for item in checks if item["status"] == "fail"}
-    if required <= passed and (not run_tests or "test-execution" in {item["id"] for item in checks if item["status"] == "pass"}):
+    executed = "test-execution" in {item["id"] for item in checks if item["status"] == "pass"}
+    if required <= passed and run_tests and executed:
         verdict = "ready"
     elif failed:
         verdict = "partial" if passed else "not-ready"

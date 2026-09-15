@@ -218,6 +218,23 @@ class SkillCreatorTests(unittest.TestCase):
             valid, message = validator.validate_skill(skill)
             self.assertTrue(valid, message)
 
+    def test_validator_accepts_documented_compatibility_frontmatter(self):
+        validator = load("quick_validate_compatibility", SCRIPTS / "quick_validate.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            skill = Path(tmp) / "compatibility-skill"
+            skill.mkdir()
+            (skill / "SKILL.md").write_text(
+                "---\n"
+                "name: compatibility-skill\n"
+                "description: A fixture with documented compatibility metadata\n"
+                "compatibility: Requires Python 3.11 and the local CLI\n"
+                "allowed-tools: Bash\n"
+                "---\n\n# Compatibility\n",
+                encoding="utf-8",
+            )
+            valid, message = validator.validate_skill(skill)
+            self.assertTrue(valid, message)
+
     def test_automation_audit_requires_evidence_and_can_reach_ready(self):
         auditor = load("automation_audit", SCRIPTS / "audit_skill_automation.py")
         with tempfile.TemporaryDirectory() as tmp:
@@ -227,7 +244,21 @@ class SkillCreatorTests(unittest.TestCase):
             initialize_clean_git_repo(root)
             report = auditor.audit_skill(skill, run_tests=True)
             self.assertEqual(report["verdict"], "ready")
-            self.assertTrue(all(item["status"] == "pass" for item in report["checks"]))
+            statuses = {item["id"]: item["status"] for item in report["checks"]}
+            self.assertEqual(statuses["test-execution"], "pass")
+            self.assertEqual(statuses["skillopt-evidence"], "not-applicable")
+
+    def test_automation_audit_does_not_call_unrun_skill_ready(self):
+        auditor = load("automation_audit_unrun", SCRIPTS / "audit_skill_automation.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill = make_skill(root, "automation-skill", "unrun")
+            add_engineering_contract(skill)
+            initialize_clean_git_repo(root)
+            report = auditor.audit_skill(skill, run_tests=False)
+            self.assertNotEqual(report["verdict"], "ready")
+            statuses = {item["id"]: item["status"] for item in report["checks"]}
+            self.assertEqual(statuses["test-execution"], "not-run")
 
     def test_automation_audit_marks_missing_contract_and_failure_behavior(self):
         auditor = load("automation_audit_partial", SCRIPTS / "audit_skill_automation.py")
@@ -680,7 +711,63 @@ class SkillCreatorTests(unittest.TestCase):
             self.assertIsNotNone(result)
             eval_dir = Path(result) / "evals"
             self.assertTrue((eval_dir / "EVALUATION.md").is_file())
+            cases = json.loads((eval_dir / "evals.json").read_text(encoding="utf-8"))
+            self.assertEqual(cases["schema_version"], 1)
+            self.assertEqual(cases["evals"], [])
             self.assertFalse((eval_dir / "manifest.json").exists())
+
+    def test_run_eval_rejects_duplicate_ids_and_symlinked_inputs(self):
+        runner = load("run_eval_validation", SCRIPTS / "run_eval.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = root / "evals.json"
+            cases.write_text(json.dumps({"evals": [
+                {"id": "same", "prompt": "one", "command": ["printf"]},
+                {"id": "same", "prompt": "two", "command": ["printf"]},
+            ]}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                runner._load_cases(cases)
+            link = root / "link.json"
+            link.symlink_to(cases)
+            with self.assertRaises(ValueError):
+                runner._load_cases(link)
+
+            cases.write_text(json.dumps({"evals": [{
+                "id": "../escape", "prompt": "x", "command": ["python3", "-c", "pass"]
+            }]}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                runner._load_cases(cases)
+
+    def test_run_eval_captures_raw_output_without_quality_score(self):
+        runner = load("run_eval_capture", SCRIPTS / "run_eval.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cases = root / "evals.json"
+            cases.write_text(json.dumps({"evals": [{
+                "id": "hello", "prompt": "world", "command": ["python3", "-c", "import sys; print(sys.argv[1])"]
+            }]}), encoding="utf-8")
+            report = runner.run(cases, root / "run", None, root, 10)
+            row = report["results"]["candidate"][0]
+            self.assertEqual(row["returncode"], 0)
+            self.assertEqual(row["prompt"], "world")
+            self.assertNotIn("score", row)
+
+    def test_benchmark_aggregator_rejects_malformed_or_nonfinite_runs(self):
+        aggregator = load("benchmark_validation", SCRIPTS / "aggregate_benchmark.py")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            malformed = root / "malformed.json"
+            malformed.write_text(json.dumps({"results": {}}), encoding="utf-8")
+            with self.assertRaises(ValueError):
+                aggregator.aggregate(malformed)
+            nonfinite = root / "nonfinite.json"
+            nonfinite.write_text(
+                json.dumps({"schema_version": 1, "results": {"candidate": [
+                    {"id": "x", "duration_seconds": float("nan"), "returncode": 0}
+                ]}}, allow_nan=True), encoding="utf-8"
+            )
+            with self.assertRaises(ValueError):
+                aggregator.aggregate(nonfinite)
 
     def test_initializer_rejects_path_traversal_name(self):
         initializer = load("init_skill_path_safety", SCRIPTS / "init_skill.py")
@@ -817,6 +904,21 @@ class SkillCreatorTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(stdout, "")
         self.assertIn("cannot be combined", stderr)
+
+    def test_engineering_reentry_is_blocked_before_running_tests(self):
+        validator = load("quick_validate_reentry", SCRIPTS / "quick_validate.py")
+        previous = os.environ.get(validator.ENGINEERING_VERIFY_ENV)
+        os.environ[validator.ENGINEERING_VERIFY_ENV] = "1"
+        try:
+            code, stdout, stderr = run_validator(validator, [str(ROOT), "--engineering"])
+        finally:
+            if previous is None:
+                os.environ.pop(validator.ENGINEERING_VERIFY_ENV, None)
+            else:
+                os.environ[validator.ENGINEERING_VERIFY_ENV] = previous
+        self.assertEqual(code, 2)
+        self.assertEqual(stdout, "")
+        self.assertIn("re-entry blocked", stderr)
 
     def test_git_inspection_accepts_clean_parent_repository(self):
         validator = load("quick_validate_git_parent", SCRIPTS / "quick_validate.py")

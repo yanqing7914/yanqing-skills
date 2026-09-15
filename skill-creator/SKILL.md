@@ -1,6 +1,6 @@
 ---
 name: skill-creator
-description: Create, audit, standardize, test, and iteratively improve Codex Skills. Use when a user wants to build or update a Skill, clarify its routing boundary, split SKILL.md into scripts/references/assets, turn failures into regression cases, or establish reproducible validation and forward-testing. Do not use for executing an existing domain Skill, building a general software project, or creating a Codex plugin.
+description: Create, audit, standardize, test, measure, and iteratively improve Codex Skills. Use when a user wants to build or update a Skill, clarify or optimize its routing description, split SKILL.md into scripts/references/assets, turn failures into regression cases, run reproducible evals or with-Skill/baseline comparisons, or establish validation and forward-testing. Do not use for executing an existing domain Skill, building a general software project, or creating a Codex plugin.
 metadata:
   short-description: Create or update a skill
 ---
@@ -73,6 +73,13 @@ Agree on the trigger boundary before writing instructions. Define:
 Use lowercase hyphen-case names (maximum 64 characters) and make the directory
 name exactly match `SKILL.md` frontmatter `name`.
 
+For a new or materially changed Skill, explicitly review the trigger description
+with the user before implementation. Include concrete positive phrases and
+near-miss requests, while keeping exclusions in the description rather than
+burying routing rules in the body. Description changes are hypotheses until a
+routing test or independent comparison shows fewer false negatives without
+creating unacceptable false positives.
+
 ### 3. Initialize or edit
 
 For a new Skill, ask for the destination and run the initializer. It creates a
@@ -138,6 +145,10 @@ run the standard-library regression suite:
 python3 -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
+Never invoke `--engineering` from a Skill's own test suite: engineering mode
+already runs that suite. The validator marks its child test process and blocks
+re-entry to prevent recursive validator/test process spawning.
+
 ### 6. Forward-test and iterate
 
 Use isolated realistic tasks when complexity or risk warrants it. Give an
@@ -145,6 +156,25 @@ independent tester the Skill and a user-like request, not your diagnosis or
 expected answer. Review raw outputs and artifacts, then convert real failures
 to the smallest regression and rerun validation. Do not forward-test against
 live production systems without approval and a rollback path.
+
+For an existing Skill, snapshot the previous tree before editing and run the
+same realistic prompts against the old snapshot and the candidate when a
+comparison is useful. Review outputs qualitatively and quantitatively only
+where assertions or an independent evaluator justify it. Optimize the
+frontmatter description separately from task behavior: generate representative
+positive, negative, and adjacent-Skill prompts, review them with the user, then
+apply only a bounded description edit and rerun routing checks. See
+[anthropic_alignment.md](references/anthropic_alignment.md) for the mapping to
+the upstream workflow and its Codex-specific limits.
+
+For recurring, scoreable work, keep real prompts in `evals/evals.json` and run
+the same cases against current and candidate trees with
+`python3 scripts/run_eval.py <evals.json> --output <run-dir> --current-skill <skill-dir> --candidate-skill <candidate-dir>`.
+This captures stdout, stderr, exit status, and timing; it never turns process
+success into a quality score. Use
+`python3 scripts/aggregate_benchmark.py <run-dir>/run.json --output <benchmark.json>`
+for a transparent process/timing summary, then attach independent grading
+evidence before using `skill_gate.py`.
 
 ### 7. Release review
 
@@ -231,11 +261,14 @@ authoritative evidence; do not count an accepted request as a completed result.
 
 - UI metadata: [references/openai_yaml.md](references/openai_yaml.md)
 - Detailed anatomy, progressive disclosure, and forward-testing: [references/skill_engineering_details.md](references/skill_engineering_details.md)
+- Anthropic workflow mapping and Codex limitations: [references/anthropic_alignment.md](references/anthropic_alignment.md)
 - SkillOpt split/result/gate protocol: [references/skillopt_evaluation.md](references/skillopt_evaluation.md)
 - Static, contract, Git, and engineering validation: `scripts/quick_validate.py`
 - New Skill scaffold: `scripts/init_skill.py`
 - UI metadata generation: `scripts/generate_openai_yaml.py`
 - Deterministic split: `scripts/split_skill_cases.py`
+- Real task runner (no fabricated scores): `scripts/run_eval.py`
+- Transparent timing/process aggregation: `scripts/aggregate_benchmark.py`
 - Selection/holdout/adopt lifecycle: `scripts/skill_gate.py`
 - Contract and regression tests: `tests/test_skill_creator.py`, `tests/skill_contract.json`, `tests/routing_cases.md`
 - Automation readiness audit (read-only by default): `scripts/audit_skill_automation.py`
