@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "skill": "obsidian-excalidraw",
+  "source_of_truth": ["SKILL.md", "references/format.md", "references/gotchas.md", "scripts/excalidraw.mjs"],
+  "verification": {
+    "test_command": ["python3", "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py", "-v"]
+  },
+  "sections": {
+    "routing": [
+      {"id": "pos-flowchart", "kind": "positive", "prompt": "在 Obsidian 里用 Excalidraw 画一张发布流程图", "expected_action": "use obsidian-excalidraw layout mode", "evidence": ["SKILL.md#workflow"]},
+      {"id": "pos-spec-to-drawing", "kind": "positive", "prompt": "把 docs/runtime-flow.md 这份 spec 画成 .excalidraw.md", "expected_action": "read spec, write layout spec, layout, validate --strict", "evidence": ["references/format.md#layout-spec"]},
+      {"id": "pos-fix-arrows", "kind": "positive", "prompt": "修一下这张 Excalidraw 图的连线，箭头没连到框上", "expected_action": "decode, fix bindings, encode --header-from, validate", "evidence": ["references/gotchas.md"]},
+      {"id": "nsp-crooked-arrows", "kind": "nonstandard_positive", "prompt": "obsidian 里那张白板图箭头歪了", "expected_action": "treat as Obsidian Excalidraw edit", "evidence": ["SKILL.md#workflow"]},
+      {"id": "nsp-add-node", "kind": "nonstandard_positive", "prompt": "给 .excalidraw.md 加个节点", "expected_action": "decode, add bound shape and arrows, encode, validate", "evidence": ["references/format.md#arrow-rules"]},
+      {"id": "neg-plain-note", "kind": "negative", "prompt": "帮我在 Obsidian 里整理一篇普通读书笔记", "expected_action": "do not use; use obsidian-vault", "evidence": ["SKILL.md"]},
+      {"id": "neg-mermaid", "kind": "negative", "prompt": "在聊天里画个 Mermaid 时序图", "expected_action": "do not use; use visualize", "evidence": ["SKILL.md"]},
+      {"id": "adj-lark-whiteboard", "kind": "adjacent", "prompt": "在飞书文档的画板里画架构图", "expected_action": "do not use; use lark-whiteboard", "evidence": ["SKILL.md"]},
+      {"id": "adj-vault-manager", "kind": "adjacent", "prompt": "整理 Obsidian vault 的目录和双链", "expected_action": "do not use; use obsidian-vault-manager", "evidence": ["SKILL.md"]}
+    ],
+    "behavior": [
+      {"id": "b-layout-success", "kind": "success", "scenario": "layout spec with decision, terminal and rework edge", "assertions": ["exit 0", "validate --strict OK", "one arrow per edge"], "evidence": ["tests/test_skill_contract.py::test_layout_strict_valid", "tests/test_skill_contract.py::test_decode_encode_roundtrip"]},
+      {"id": "b-broken-binding", "kind": "invalid_input", "scenario": "arrow bound one way, stale text section, absolute points, bad spec", "assertions": ["validate exit 1 with named error", "bad layout spec exit 2 and no output file"], "evidence": ["tests/test_skill_contract.py::test_broken_binding_fails", "tests/test_skill_contract.py::test_stale_text_section_fails", "tests/test_skill_contract.py::test_absolute_points_fail", "tests/test_skill_contract.py::test_bad_layout_spec_exit_2"]},
+      {"id": "b-refuse-overwrite", "kind": "tool_or_permission_failure", "scenario": "output exists without --force; node_modules missing; unknown command", "assertions": ["exit 2", "existing file unchanged", "node tests skip with npm ci --no-bin-links hint"], "evidence": ["tests/test_skill_contract.py::test_layout_refuses_overwrite", "tests/test_skill_contract.py::test_usage_exit_2"]},
+      {"id": "b-idempotent", "kind": "idempotence", "scenario": "same input run twice", "assertions": ["identical validate stdout", "byte-identical layout output"], "evidence": ["tests/test_skill_contract.py::test_validate_fixture_idempotent", "tests/test_skill_contract.py::test_layout_deterministic"]}
+    ],
+    "completion": [
+      {"id": "c-validate-ok", "artifact": "the written .excalidraw.md file", "assertions": ["final validate line is OK and quoted in the report", "every WARN fixed or reported"], "evidence": ["SKILL.md#completion-checks"]},
+      {"id": "c-traceable", "artifact": "nodes and edges in the drawing", "assertions": ["each node and edge traces to the source document", "no invented steps"], "evidence": ["SKILL.md#safety-rules"]},
+      {"id": "c-no-overwrite", "artifact": "pre-existing drawings", "assertions": ["no file overwritten without explicit user approval"], "evidence": ["tests/test_skill_contract.py::test_layout_refuses_overwrite"]}
+    ]
+  }
+}
