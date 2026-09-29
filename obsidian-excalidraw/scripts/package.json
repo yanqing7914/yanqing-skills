@@ -1,0 +1,16 @@
+{
+  "name": "obsidian-excalidraw-cli",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Decode, encode, lay out, and validate Obsidian Excalidraw (.excalidraw.md) drawings",
+  "type": "module",
+  "bin": {
+    "obsidian-excalidraw": "excalidraw.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "lz-string": "1.5.0"
+  }
+}

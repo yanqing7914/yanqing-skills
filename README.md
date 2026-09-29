@@ -7,7 +7,7 @@
 #### 我自己使用和维护的一些 Agent Skills
 
 [![License](https://img.shields.io/badge/License-MIT-3B82F6?style=for-the-badge)](./LICENSE)
-[![Skills](https://img.shields.io/badge/Skills-4-10B981?style=for-the-badge)](#-skills)
+[![Skills](https://img.shields.io/badge/Skills-5-10B981?style=for-the-badge)](#-skills)
 [![AgentSkills](https://img.shields.io/badge/AgentSkills-Standard-8B5CF6?style=for-the-badge)](https://agentskills.io)
 
 ![Claude Code](https://img.shields.io/badge/Claude_Code-Skill-D97706?style=flat-square&logo=anthropic&logoColor=white)
@@ -28,6 +28,7 @@
 | 💽 [**storage-analyzer**](#-storage-analyzer) | 分析 Mac / Windows 磁盘占用，生成分级清理报告 | [`SKILL.md`](./storage-analyzer/SKILL.md) |
 | 🩺 [**github-repo-health**](#-github-repo-health) | 审计 GitHub 仓库的结构、CI/CD、发布和安全风险 | [`SKILL.md`](./github-repo-health/SKILL.md) |
 | 🎼 [**multi-agent-engineering**](#-multi-agent-engineering) | 以主会话编排多个子代理完成复杂软件工程 | [`SKILL.md`](./multi-agent-engineering/SKILL.md) |
+| 🎨 [**obsidian-excalidraw**](#-obsidian-excalidraw) | 在 Obsidian 里创建、编辑、校验 Excalidraw 图 | [`SKILL.md`](./obsidian-excalidraw/SKILL.md) |
 
 ---
 
@@ -197,6 +198,42 @@ C 盘满了
 ```
 
 → [SKILL.md](./multi-agent-engineering/SKILL.md)
+
+</td></tr>
+</table>
+
+<table>
+<tr><td>
+
+### 🎨 obsidian-excalidraw
+
+> Obsidian 的 Excalidraw 文件把整块画布压成一段 base64，手改必坏图。
+
+在 Obsidian 仓库里创建、编辑、校验 `.excalidraw.md`。所有读写都走一个确定性 CLI，不手写也不用正则碰 `compressed-json` 块，避免箭头脱绑、`## Text Elements` 过期、插件打不开图。
+
+**它能做什么**
+
+- 从节点/边的 layout spec 一键生成流程图，同一份 spec 产出字节一致的文件
+- 解出场景 JSON 改完再编回去，沿用原文件的 frontmatter 和 banner
+- 校验元素 id、绑定关系、箭头坐标和 Text Elements 段，`--strict` 还会查端点位置和连线交叉
+- 支持 decision / terminal / blocked 节点和 rework / blocked 连线样式
+
+**安全边界**
+
+- 默认写新文件，覆盖已有图必须先拿到你的同意
+- 编辑在副本上进行，新文件校验通过前原图不动
+- 源文档里没有的步骤、分支、标签不会自己编，会先问
+
+**怎么触发**
+
+```text
+用 excalidraw 画个流程图放到 obsidian
+把这个 spec 画成图
+检查这张 excalidraw 的连线
+给图加一个不需要发布的分支
+```
+
+→ [SKILL.md](./obsidian-excalidraw/SKILL.md)
 
 </td></tr>
 </table>
